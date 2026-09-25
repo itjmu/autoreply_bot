@@ -15,104 +15,79 @@ def main_menu(
 ):
 
     if not autoreply_enabled:
-        auto_text = (
-            "🔴 Автоответчик выключен"
-        )
+        auto_text = "🔴 Автоответ"
     else:
-        auto_text = (
-            "🟢 Автоответчик включён"
-        )
+        auto_text = "🟢 Автоответ"
 
     if not global_ai_enabled:
-
-        ai_text = (
-            "⛔ AI отключён админом"
-        )
-
+        ai_text = "⛔ AI откл"
     elif ai_enabled:
-
-        ai_text = (
-            f"🧠 AI: {ai_used}/{ai_limit}"
-        )
-
+        ai_text = f"🧠 AI: {ai_used}/{ai_limit}"
     else:
-
-        ai_text = (
-            "🧠 AI выключен"
-        )
-
+        ai_text = "🧠 AI выкл"
 
     rows = [
-
         [
             InlineKeyboardButton(
                 text=auto_text,
                 callback_data="settings",
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                text="➕ Добавить вопрос / ответ",
-                callback_data="faq_add",
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                text="📚 Мои вопросы",
-                callback_data="faq_list",
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                text="👤 Профиль AI",
-                callback_data="profile",
-            )
-        ],
-
-        [
+            ),
             InlineKeyboardButton(
                 text=ai_text,
                 callback_data="ai_toggle",
-            )
+            ),
         ],
-
         [
             InlineKeyboardButton(
-                text="📊 Мой AI-лимит",
+                text="➕ Добавить",
+                callback_data="faq_add",
+            ),
+            InlineKeyboardButton(
+                text="📚 Вопросы",
+                callback_data="faq_list",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="👤 Профиль",
+                callback_data="profile",
+            ),
+            InlineKeyboardButton(
+                text="📊 Лимит",
                 callback_data="my_ai_limit",
-            )
+            ),
         ],
-
         [
             InlineKeyboardButton(
-                text="⚙️ Языки, время и график",
-                callback_data="settings",
-            )
-        ],
-
-        [
-            InlineKeyboardButton(
-                text="🔗 Telegram Business",
+                text="🔗 Business",
                 callback_data="business_status",
-            )
+            ),
+            InlineKeyboardButton(
+                text="🎁 Рефералы",
+                callback_data="referrals",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="💎 Premium",
+                callback_data="premium_buy",
+            ),
+            InlineKeyboardButton(
+                text="⚙️ Настройки",
+                callback_data="settings",
+            ),
         ],
     ]
 
-
     if is_admin:
-
         rows.append(
             [
                 InlineKeyboardButton(
-                    text="👑 Админ-панель",
+                    text="👑 Админ",
                     callback_data="admin",
                 )
             ]
         )
-
 
     return InlineKeyboardMarkup(
         inline_keyboard=rows
@@ -133,58 +108,96 @@ def back_main():
     )
 
 
-def profile_menu():
+def profile_menu(
+    is_admin: bool = False,
+    is_premium: bool = False,
+    show_promo: bool = True,
+):
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text="👤 Имя",
+                callback_data="profile_edit:owner_name",
+            ),
+            InlineKeyboardButton(
+                text="🎂 Возраст",
+                callback_data="profile_edit:age",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="⚧ Пол",
+                callback_data="profile_edit:gender",
+            ),
+            InlineKeyboardButton(
+                text="💬 Темы",
+                callback_data="profile_edit:topics",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🧠 AI",
+                callback_data="profile_edit:ai_description",
+            ),
+            InlineKeyboardButton(
+                text="🆘 Запасной",
+                callback_data="profile_edit:fallback_text",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text="🆘 Запасной 2",
+                callback_data="profile_edit:fallback_text2",
+            ),
+        ],
+    ]
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🎭 Роли чатов",
+                callback_data="chat_roles",
+            )
+        ]
+    )
+
+    if is_premium:
+
+        promo_text = (
+            "📣 Реклама: вкл"
+            if show_promo
+            else "📣 Реклама: выкл"
+        )
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=promo_text,
+                    callback_data="toggle_promo",
+                )
+            ]
+        )
+
+    bottom = [
+        InlineKeyboardButton(
+            text="⬅️ Назад",
+            callback_data="main",
+        ),
+    ]
+
+    if is_admin:
+        bottom.append(
+            InlineKeyboardButton(
+                text="👑 Админ",
+                callback_data="admin",
+            )
+        )
+
+    rows.append(bottom)
 
     return InlineKeyboardMarkup(
-        inline_keyboard=[
-
-            [
-                InlineKeyboardButton(
-                    text="👤 Имя / роль",
-                    callback_data="profile_edit:owner_name",
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🎂 Возраст",
-                    callback_data="profile_edit:age",
-                ),
-
-                InlineKeyboardButton(
-                    text="⚧ Пол",
-                    callback_data="profile_edit:gender",
-                ),
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="💬 Темы владельца",
-                    callback_data="profile_edit:topics",
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🧠 Характеристика AI",
-                    callback_data="profile_edit:ai_description",
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🆘 Запасной ответ",
-                    callback_data="profile_edit:fallback_text",
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Главное меню",
-                    callback_data="main",
-                )
-            ],
-        ]
+        inline_keyboard=rows
     )
 
 
@@ -195,7 +208,7 @@ def faq_list_keyboard(
     rows = []
 
 
-    for faq in faqs[:20]:
+    for faq in faqs[:10]:
 
         text = faq["question"]
 
@@ -284,6 +297,13 @@ def settings_menu(
                 InlineKeyboardButton(
                     text=schedule_text,
                     callback_data="settings_schedule",
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text="📖 Инструкция",
+                    callback_data="guide_view",
                 )
             ],
 
@@ -508,7 +528,12 @@ def admin_menu(
                 InlineKeyboardButton(
                     text="📊 Статистика",
                     callback_data="admin_stats",
-                )
+                ),
+
+                InlineKeyboardButton(
+                    text="♻️ Сброс лимитов",
+                    callback_data="admin_reset_usage",
+                ),
             ],
 
             [
@@ -532,36 +557,44 @@ def admin_menu(
 
             [
                 InlineKeyboardButton(
-                    text="🚫 Запрещённые темы",
+                    text="🚫 Темы",
                     callback_data="admin_edit:blocked_topics",
-                )
-            ],
+                ),
 
-            [
                 InlineKeyboardButton(
                     text="💬 Ответ на запрет",
                     callback_data="admin_edit:blocked_reply",
-                )
+                ),
             ],
 
             [
                 InlineKeyboardButton(
-                    text="🤖 AI-провайдеры",
+                    text="🤖 Провайдеры",
                     callback_data="admin_providers",
-                )
-            ],
+                ),
 
-            [
                 InlineKeyboardButton(
-                    text="👥 Пользователи / тарифы",
+                    text="👥 Пользователи",
                     callback_data="admin_users",
-                )
+                ),
             ],
 
             [
                 InlineKeyboardButton(
-                    text="♻️ Сбросить дневные лимиты",
-                    callback_data="admin_reset_usage",
+                    text="💎 Premium / цены",
+                    callback_data="admin_premium",
+                ),
+
+                InlineKeyboardButton(
+                    text="📢 Рассылка",
+                    callback_data="admin_broadcast",
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text="📖 Инструкция",
+                    callback_data="admin_guide",
                 )
             ],
 
@@ -589,8 +622,97 @@ def admin_back():
     )
 
 
+def admin_guide_keyboard(
+    messages: list,
+):
+
+    rows = []
+
+
+    for index, item in enumerate(
+        messages,
+        start=1,
+    ):
+
+        preview = (
+            item.get("preview")
+            or "Медиа / сообщение"
+        )
+
+        preview = preview[:40]
+
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"🗑 {index}. {preview}"
+                    ),
+                    callback_data=(
+                        f"guide_delete:{item['id']}"
+                    ),
+                )
+            ]
+        )
+
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="➕ Добавить сообщение",
+                callback_data="guide_add",
+            )
+        ]
+    )
+
+
+    if messages:
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="🧹 Очистить всё",
+                    callback_data="guide_clear",
+                )
+            ]
+        )
+
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Админ-панель",
+                callback_data="admin",
+            )
+        ]
+    )
+
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+def guide_adding_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Готово",
+                    callback_data="guide_done",
+                )
+            ]
+        ]
+    )
+
+
 def admin_users_keyboard(
     users: list,
+    offset: int = 0,
+    total: int = 0,
+    page_size: int = 20,
+    query: str = "",
 ):
 
     rows = []
@@ -635,6 +757,56 @@ def admin_users_keyboard(
         )
 
 
+    nav = []
+
+    if offset > 0:
+
+        nav.append(
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data=(
+                    f"admin_users_page:{max(0, offset - page_size)}"
+                ),
+            )
+        )
+
+
+    if offset + page_size < total:
+
+        nav.append(
+            InlineKeyboardButton(
+                text="Вперёд ➡️",
+                callback_data=(
+                    f"admin_users_page:{offset + page_size}"
+                ),
+            )
+        )
+
+
+    if nav:
+
+        rows.append(nav)
+
+
+    search_row = [
+        InlineKeyboardButton(
+            text="🔍 Поиск",
+            callback_data="admin_users_search",
+        )
+    ]
+
+    if query:
+
+        search_row.append(
+            InlineKeyboardButton(
+                text="✖️ Сброс",
+                callback_data="admin_users_clear",
+            )
+        )
+
+    rows.append(search_row)
+
+
     rows.append(
         [
             InlineKeyboardButton(
@@ -647,4 +819,341 @@ def admin_users_keyboard(
 
     return InlineKeyboardMarkup(
         inline_keyboard=rows
+    )
+
+
+def admin_providers_keyboard(
+    providers: list,
+):
+
+    rows = []
+    pair = []
+
+    for item in providers:
+
+        icon = (
+            "🟢"
+            if item["enabled"]
+            else "🔴"
+        )
+
+        pair.append(
+            InlineKeyboardButton(
+                text=f"{icon} {item['name']}",
+                callback_data=(
+                    f"admin_prov_toggle:{item['name']}"
+                ),
+            )
+        )
+
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+
+    if pair:
+        rows.append(pair)
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="🔄 Изменить порядок",
+                callback_data="admin_prov_order",
+            )
+        ]
+    )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Админ-панель",
+                callback_data="admin",
+            )
+        ]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+def referral_menu():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Главное меню",
+                    callback_data="main",
+                )
+            ]
+        ]
+    )
+
+
+def chat_roles_keyboard(
+    chats: list,
+):
+
+    rows = []
+
+    for chat in chats:
+
+        name = (
+            chat["peer_name"]
+            or (
+                f"@{chat['username']}"
+                if chat["username"]
+                else f"ID {chat['chat_id']}"
+            )
+        )
+
+        name = name[:28]
+
+        icon = (
+            "🎭"
+            if chat["role"]
+            else "💬"
+        )
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{icon} {name}",
+                    callback_data=(
+                        f"chat_role_set:{chat['chat_id']}"
+                    ),
+                )
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✏️ Ввести ID / username",
+                callback_data="chat_role_manual",
+            )
+        ]
+    )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Профиль",
+                callback_data="profile",
+            )
+        ]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+def premium_buy_keyboard(
+    week_price: int,
+    month_price: int,
+    manual_enabled: bool,
+):
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"⭐ Неделя — {week_price}⭐",
+                callback_data="buy_premium:week",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"⭐ Месяц — {month_price}⭐",
+                callback_data="buy_premium:month",
+            )
+        ],
+    ]
+
+    if manual_enabled:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="💳 Другой способ оплаты",
+                    callback_data="manual_payment",
+                )
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Главное меню",
+                callback_data="main",
+            )
+        ]
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+def manual_payment_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Premium",
+                    callback_data="premium_buy",
+                )
+            ]
+        ]
+    )
+
+
+def broadcast_confirm_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Отправить",
+                    callback_data="broadcast_confirm",
+                ),
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="broadcast_cancel",
+                )
+            ]
+        ]
+    )
+
+
+def admin_premium_menu(
+    settings: dict,
+):
+
+    manual_on = (
+        settings.get(
+            "manual_payment_enabled"
+        )
+        == "1"
+    )
+
+    manual_text = (
+        "🟢 Ручной способ: вкл"
+        if manual_on
+        else "⚪ Ручной способ: выкл"
+    )
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"💰 Цена/нед: "
+                        f"{settings['premium_price_week']}⭐"
+                    ),
+                    callback_data=(
+                        "admin_edit:premium_price_week"
+                    ),
+                ),
+
+                InlineKeyboardButton(
+                    text=(
+                        f"💰 Цена/мес: "
+                        f"{settings['premium_price_month']}⭐"
+                    ),
+                    callback_data=(
+                        "admin_edit:premium_price_month"
+                    ),
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"🆓 FAQ Free: "
+                        f"{settings['free_faq_limit']}"
+                    ),
+                    callback_data=(
+                        "admin_edit:free_faq_limit"
+                    ),
+                ),
+
+                InlineKeyboardButton(
+                    text=(
+                        f"⭐ FAQ Premium: "
+                        f"{settings['premium_faq_limit']}"
+                    ),
+                    callback_data=(
+                        "admin_edit:premium_faq_limit"
+                    ),
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"🎭 Макс. ролей: "
+                        f"{settings['max_chat_roles']}"
+                    ),
+                    callback_data=(
+                        "admin_edit:max_chat_roles"
+                    ),
+                ),
+
+                InlineKeyboardButton(
+                    text=(
+                        f"🆓 Ролей Free: "
+                        f"{settings.get('free_chat_roles', '1')}"
+                    ),
+                    callback_data=(
+                        "admin_edit:free_chat_roles"
+                    ),
+                ),
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text=manual_text,
+                    callback_data="admin_manual_pay_toggle",
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text="📝 Текст ручного способа",
+                    callback_data=(
+                        "admin_edit:manual_payment_text"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text="📣 Рекламная подпись",
+                    callback_data=(
+                        "admin_edit:promo_signature_text"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text=(
+                        f"⏱ Интервал рассылки: "
+                        f"{settings.get('broadcast_interval', '1')}с"
+                    ),
+                    callback_data=(
+                        "admin_edit:broadcast_interval"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Админ-панель",
+                    callback_data="admin",
+                )
+            ],
+        ]
     )

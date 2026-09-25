@@ -88,7 +88,7 @@ def find_direct_answer(
         and best_score >= threshold
     ):
         return (
-            best_item["answer"],
+            best_item,
             best_score,
         )
 

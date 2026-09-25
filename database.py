@@ -1,5 +1,8 @@
+import os
+
 from datetime import (
     datetime,
+    timedelta,
     timezone,
 )
 
@@ -11,7 +14,27 @@ from zoneinfo import (
 import aiosqlite
 
 
-DB_PATH = "autoreply.db"
+_BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+DB_PATH = os.getenv(
+    "DB_PATH",
+    os.path.join(
+        _BASE_DIR,
+        "autoreply.db",
+    ),
+)
+
+
+def _connect(
+    path: str | None = None,
+):
+
+    return aiosqlite.connect(
+        path if path else DB_PATH,
+        timeout=30,
+    )
 
 
 DEFAULT_SETTINGS = {
@@ -28,6 +51,30 @@ DEFAULT_SETTINGS = {
         "По этой теме автоматический помощник "
         "не отвечает. Владелец сможет ответить лично."
     ),
+
+    "premium_price_week": "25",
+
+    "premium_price_month": "75",
+
+    "free_faq_limit": "20",
+
+    "premium_faq_limit": "50",
+
+    "max_chat_roles": "10",
+
+    "free_chat_roles": "1",
+
+    "manual_payment_enabled": "0",
+
+    "manual_payment_text": "",
+
+    "promo_signature_text": (
+        "\n\n🤖 Понравился помощник? "
+        "Установи себе такого же "
+        "секретаря бесплатно:\n{link}"
+    ),
+
+    "broadcast_interval": "1",
 }
 
 
@@ -79,9 +126,18 @@ async def _add_column_if_missing(
 
 async def init_db():
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
+
+        await db.execute(
+            "PRAGMA journal_mode=WAL"
+        )
+
+        await db.execute(
+            "PRAGMA synchronous=NORMAL"
+        )
+
 
         await db.execute(
             """
@@ -183,6 +239,34 @@ async def init_db():
             "TEXT DEFAULT 'free'",
         )
 
+        await _add_column_if_missing(
+            db,
+            "users",
+            "bonus_ai_limit",
+            "INTEGER DEFAULT 0",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "users",
+            "premium_until",
+            "TEXT DEFAULT ''",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "users",
+            "fallback_text2",
+            "TEXT DEFAULT ''",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "users",
+            "show_promo",
+            "INTEGER DEFAULT 1",
+        )
+
 
         await db.execute(
             """
@@ -195,7 +279,57 @@ async def init_db():
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL,
 
+                answer_type TEXT DEFAULT 'text',
+                answer_file_id TEXT DEFAULT '',
+
                 enabled INTEGER DEFAULT 1,
+
+                created_at DATETIME
+                DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+
+        await _add_column_if_missing(
+            db,
+            "faq",
+            "answer_type",
+            "TEXT DEFAULT 'text'",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "faq",
+            "answer_file_id",
+            "TEXT DEFAULT ''",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "faq",
+            "answer_entities",
+            "TEXT DEFAULT ''",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "faq",
+            "answer_payload",
+            "TEXT DEFAULT ''",
+        )
+
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS guide_messages (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                chat_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+
+                preview TEXT DEFAULT '',
 
                 created_at DATETIME
                 DEFAULT CURRENT_TIMESTAMP
@@ -337,6 +471,8 @@ async def init_db():
 
                 username TEXT DEFAULT '',
 
+                role TEXT DEFAULT '',
+
                 last_seen DATETIME
                 DEFAULT CURRENT_TIMESTAMP,
 
@@ -349,6 +485,52 @@ async def init_db():
         )
 
 
+        await _add_column_if_missing(
+            db,
+            "chat_settings",
+            "role",
+            "TEXT DEFAULT ''",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "chat_settings",
+            "fallback_stage",
+            "INTEGER DEFAULT 0",
+        )
+
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS referrals (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                referrer_id INTEGER NOT NULL,
+
+                referred_id INTEGER NOT NULL UNIQUE,
+
+                created_at DATETIME
+                DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_providers (
+
+                name TEXT PRIMARY KEY,
+
+                enabled INTEGER DEFAULT 1,
+
+                position INTEGER DEFAULT 0
+            )
+            """
+        )
+
+
         await db.commit()
 
 
@@ -356,13 +538,41 @@ async def init_db():
 # USERS
 # =========================================================
 
+async def user_exists(
+    telegram_id: int,
+) -> bool:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT 1
+
+            FROM users
+
+            WHERE telegram_id = ?
+            """,
+            (
+                telegram_id,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+        return row is not None
+
+
 async def ensure_user(
     telegram_id: int,
     username: str | None = None,
     first_name: str | None = None,
 ):
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -431,6 +641,41 @@ async def ensure_user(
         await db.commit()
 
 
+def _premium_expired(
+    premium_until: str,
+) -> bool:
+
+    if not premium_until:
+
+        return False
+
+
+    try:
+
+        until = datetime.fromisoformat(
+            premium_until
+        )
+
+    except ValueError:
+
+        return False
+
+
+    if until.tzinfo is None:
+
+        until = until.replace(
+            tzinfo=timezone.utc
+        )
+
+
+    return (
+        until
+        <= datetime.now(
+            timezone.utc
+        )
+    )
+
+
 async def get_profile(
     telegram_id: int,
 ):
@@ -440,7 +685,7 @@ async def get_profile(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -466,11 +711,53 @@ async def get_profile(
         row = await cursor.fetchone()
 
 
-        return (
-            dict(row)
-            if row
-            else None
+        if not row:
+
+            return None
+
+
+        profile = dict(
+            row
         )
+
+
+        if (
+            profile["plan"] == "premium"
+
+            and _premium_expired(
+                profile.get(
+                    "premium_until",
+                    "",
+                )
+            )
+        ):
+
+            await db.execute(
+                """
+                UPDATE users
+
+                SET plan = 'free',
+                premium_until = ''
+
+                WHERE telegram_id = ?
+                """,
+                (
+                    telegram_id,
+                ),
+            )
+
+
+            await db.commit()
+
+
+            profile["plan"] = "free"
+
+            profile[
+                "premium_until"
+            ] = ""
+
+
+        return profile
 
 
 async def update_profile_field(
@@ -487,6 +774,7 @@ async def update_profile_field(
         "topics",
         "ai_description",
         "fallback_text",
+        "fallback_text2",
     }
 
 
@@ -502,7 +790,7 @@ async def update_profile_field(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -540,7 +828,7 @@ async def toggle_ai(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -583,7 +871,7 @@ async def toggle_user_plan(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -591,7 +879,8 @@ async def toggle_user_plan(
             """
             UPDATE users
 
-            SET plan = ?
+            SET plan = ?,
+            premium_until = ''
 
             WHERE telegram_id = ?
             """,
@@ -608,6 +897,92 @@ async def toggle_user_plan(
     return new_plan
 
 
+async def set_show_promo(
+    telegram_id: int,
+    value: bool,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            UPDATE users
+
+            SET show_promo = ?
+
+            WHERE telegram_id = ?
+            """,
+            (
+                1 if value else 0,
+                telegram_id,
+            ),
+        )
+
+
+        await db.commit()
+
+
+    return bool(value)
+
+
+async def set_premium(
+    telegram_id: int,
+    days: int | None = None,
+):
+
+    await ensure_user(
+        telegram_id
+    )
+
+
+    if days:
+
+        until = (
+            datetime.now(
+                timezone.utc
+            )
+            + timedelta(
+                days=days
+            )
+        )
+
+        premium_until = (
+            until.isoformat()
+        )
+
+    else:
+
+        premium_until = ""
+
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            UPDATE users
+
+            SET plan = 'premium',
+            premium_until = ?
+
+            WHERE telegram_id = ?
+            """,
+            (
+                premium_until,
+                telegram_id,
+            ),
+        )
+
+
+        await db.commit()
+
+
+    return premium_until
+
+
 # =========================================================
 # FAQ
 # =========================================================
@@ -616,6 +991,10 @@ async def add_faq(
     owner_id: int,
     question: str,
     answer: str,
+    answer_type: str = "text",
+    answer_file_id: str = "",
+    answer_entities: str = "",
+    answer_payload: str = "",
 ):
 
     await ensure_user(
@@ -623,7 +1002,7 @@ async def add_faq(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -632,15 +1011,23 @@ async def add_faq(
             INSERT INTO faq (
                 owner_id,
                 question,
-                answer
+                answer,
+                answer_type,
+                answer_file_id,
+                answer_entities,
+                answer_payload
             )
 
-            VALUES (?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 owner_id,
                 question,
                 answer,
+                answer_type,
+                answer_file_id,
+                answer_entities,
+                answer_payload,
             ),
         )
 
@@ -652,7 +1039,7 @@ async def get_faqs(
     owner_id: int,
 ):
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -687,12 +1074,41 @@ async def get_faqs(
         ]
 
 
+async def count_faqs(
+    owner_id: int,
+) -> int:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+
+            FROM faq
+
+            WHERE owner_id = ?
+            AND enabled = 1
+            """,
+            (
+                owner_id,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+        return row[0] if row else 0
+
+
 async def delete_faq(
     owner_id: int,
     faq_id: int,
 ):
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -714,6 +1130,132 @@ async def delete_faq(
 
 
 # =========================================================
+# GUIDE MESSAGES
+# =========================================================
+
+async def add_guide_message(
+    chat_id: int,
+    message_id: int,
+    preview: str = "",
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            INSERT INTO guide_messages (
+                chat_id,
+                message_id,
+                preview
+            )
+
+            VALUES (?, ?, ?)
+            """,
+            (
+                chat_id,
+                message_id,
+                preview,
+            ),
+        )
+
+
+        await db.commit()
+
+
+async def get_guide_messages():
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        db.row_factory = (
+            aiosqlite.Row
+        )
+
+
+        cursor = await db.execute(
+            """
+            SELECT *
+
+            FROM guide_messages
+
+            ORDER BY id ASC
+            """
+        )
+
+
+        rows = await cursor.fetchall()
+
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+async def count_guide_messages() -> int:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+
+            FROM guide_messages
+            """
+        )
+
+
+        row = await cursor.fetchone()
+
+
+        return row[0] if row else 0
+
+
+async def delete_guide_message(
+    guide_id: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            DELETE FROM guide_messages
+
+            WHERE id = ?
+            """,
+            (
+                guide_id,
+            ),
+        )
+
+
+        await db.commit()
+
+
+async def clear_guide_messages():
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            DELETE FROM guide_messages
+            """
+        )
+
+
+        await db.commit()
+
+
+# =========================================================
 # BUSINESS CONNECTIONS
 # =========================================================
 
@@ -728,7 +1270,7 @@ async def save_business_connection(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -767,7 +1309,7 @@ async def get_owner_by_connection(
     connection_id: str,
 ):
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -800,7 +1342,7 @@ async def get_connections(
     owner_id: int,
 ):
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -838,7 +1380,7 @@ async def get_connections(
 
 async def get_global_settings():
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -878,7 +1420,7 @@ async def set_global_setting(
         )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -954,7 +1496,7 @@ async def get_preferences(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1012,7 +1554,7 @@ async def set_preference(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1052,7 +1594,7 @@ async def toggle_autoreply(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1097,7 +1639,7 @@ async def toggle_schedule(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1334,7 +1876,7 @@ async def remember_chat(
     username: str = "",
 ):
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1388,7 +1930,7 @@ async def get_chat_settings(
     chat_id: int,
 ):
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1423,6 +1965,189 @@ async def get_chat_settings(
         )
 
 
+async def get_chats_for_roles(
+    owner_id: int,
+    limit: int = 30,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        db.row_factory = (
+            aiosqlite.Row
+        )
+
+
+        cursor = await db.execute(
+            """
+            SELECT *
+
+            FROM chat_settings
+
+            WHERE owner_id = ?
+
+            ORDER BY last_seen DESC
+
+            LIMIT ?
+            """,
+            (
+                owner_id,
+                limit,
+            ),
+        )
+
+
+        rows = await cursor.fetchall()
+
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+async def set_chat_role(
+    owner_id: int,
+    chat_id: int,
+    role: str,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            INSERT INTO chat_settings (
+
+                owner_id,
+                chat_id,
+                enabled,
+                role,
+                last_seen
+            )
+
+            VALUES (
+                ?, ?, 1, ?,
+                CURRENT_TIMESTAMP
+            )
+
+            ON CONFLICT(
+                owner_id,
+                chat_id
+            )
+
+            DO UPDATE SET
+
+                role = excluded.role
+            """,
+            (
+                owner_id,
+                chat_id,
+                role,
+            ),
+        )
+
+
+        await db.commit()
+
+
+async def count_chat_roles(
+    owner_id: int,
+) -> int:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+
+            FROM chat_settings
+
+            WHERE owner_id = ?
+            AND role != ''
+            """,
+            (
+                owner_id,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+        return row[0] if row else 0
+
+
+async def get_fallback_stage(
+    owner_id: int,
+    chat_id: int,
+) -> int:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT fallback_stage
+
+            FROM chat_settings
+
+            WHERE owner_id = ?
+            AND chat_id = ?
+            """,
+            (
+                owner_id,
+                chat_id,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+        return row[0] if row else 0
+
+
+async def set_fallback_stage(
+    owner_id: int,
+    chat_id: int,
+    stage: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            INSERT INTO chat_settings (
+                owner_id,
+                chat_id,
+                fallback_stage
+            )
+            VALUES (?, ?, ?)
+
+            ON CONFLICT(owner_id, chat_id)
+
+            DO UPDATE SET
+                fallback_stage = excluded.fallback_stage
+            """,
+            (
+                owner_id,
+                chat_id,
+                stage,
+            ),
+        )
+
+
+        await db.commit()
+
+
 async def toggle_chat(
     owner_id: int,
     chat_id: int,
@@ -1448,7 +2173,7 @@ async def toggle_chat(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1611,7 +2336,13 @@ async def get_user_quota_status(
         )
 
 
-    async with aiosqlite.connect(
+    limit += (
+        profile.get("bonus_ai_limit", 0)
+        or 0
+    )
+
+
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1732,7 +2463,13 @@ async def reserve_user_ai_slot(
         )
 
 
-    async with aiosqlite.connect(
+    limit += (
+        profile.get("bonus_ai_limit", 0)
+        or 0
+    )
+
+
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1838,7 +2575,7 @@ async def release_user_ai_slot(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1899,7 +2636,7 @@ async def record_provider_result(
     )
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -1962,7 +2699,7 @@ async def get_provider_stats_today():
     day = utc_day()
 
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -2002,7 +2739,7 @@ async def get_provider_stats_today():
 
 async def get_admin_stats():
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -2088,11 +2825,95 @@ async def get_admin_stats():
     }
 
 
-async def get_users_for_admin(
-    limit: int = 30,
+def _user_search_clause(
+    query: str,
 ):
 
-    async with aiosqlite.connect(
+    query = (query or "").strip()
+
+
+    if not query:
+
+        return "", ()
+
+
+    if query.isdigit():
+
+        return (
+            """
+            WHERE telegram_id = ?
+            OR username LIKE ?
+            OR first_name LIKE ?
+            OR owner_name LIKE ?
+            """,
+            (
+                int(query),
+                f"%{query}%",
+                f"%{query}%",
+                f"%{query}%",
+            ),
+        )
+
+
+    like = f"%{query}%"
+
+    return (
+        """
+        WHERE username LIKE ?
+        OR first_name LIKE ?
+        OR owner_name LIKE ?
+        OR CAST(telegram_id AS TEXT) LIKE ?
+        """,
+        (
+            like,
+            like,
+            like,
+            like,
+        ),
+    )
+
+
+async def count_users(
+    query: str = "",
+) -> int:
+
+    clause, params = (
+        _user_search_clause(query)
+    )
+
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM users
+            {clause}
+            """,
+            params,
+        )
+
+
+        row = await cursor.fetchone()
+
+
+        return row[0] if row else 0
+
+
+async def get_users_for_admin(
+    limit: int = 30,
+    offset: int = 0,
+    query: str = "",
+):
+
+    clause, params = (
+        _user_search_clause(query)
+    )
+
+
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -2102,7 +2923,7 @@ async def get_users_for_admin(
 
 
         cursor = await db.execute(
-            """
+            f"""
             SELECT
 
                 telegram_id,
@@ -2114,12 +2935,16 @@ async def get_users_for_admin(
 
             FROM users
 
+            {clause}
+
             ORDER BY telegram_id DESC
 
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
             (
+                *params,
                 limit,
+                offset,
             ),
         )
 
@@ -2163,9 +2988,33 @@ async def get_users_for_admin(
     return users
 
 
+async def get_all_user_ids():
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT telegram_id
+
+            FROM users
+            """
+        )
+
+
+        rows = await cursor.fetchall()
+
+
+        return [
+            row[0]
+            for row in rows
+        ]
+
+
 async def reset_daily_usage():
 
-    async with aiosqlite.connect(
+    async with _connect(
         DB_PATH
     ) as db:
 
@@ -2182,5 +3031,290 @@ async def reset_daily_usage():
             """
         )
 
+
+        await db.commit()
+
+
+# =========================================================
+# REFERRALS
+# =========================================================
+
+async def is_referred(
+    user_id: int,
+) -> bool:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT 1
+
+            FROM referrals
+
+            WHERE referred_id = ?
+            """,
+            (
+                user_id,
+            ),
+        )
+
+        row = await cursor.fetchone()
+
+        return row is not None
+
+
+async def record_referral(
+    referrer_id: int,
+    referred_id: int,
+) -> bool:
+
+    if referrer_id == referred_id:
+        return False
+
+    if await is_referred(referred_id):
+        return False
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            INSERT INTO referrals (
+                referrer_id,
+                referred_id
+            )
+
+            VALUES (?, ?)
+            """,
+            (
+                referrer_id,
+                referred_id,
+            ),
+        )
+
+        await db.execute(
+            """
+            UPDATE users
+
+            SET bonus_ai_limit =
+                bonus_ai_limit + 1
+
+            WHERE telegram_id = ?
+            """,
+            (
+                referrer_id,
+            ),
+        )
+
+        await db.execute(
+            """
+            UPDATE users
+
+            SET bonus_ai_limit =
+                bonus_ai_limit + 1
+
+            WHERE telegram_id = ?
+            """,
+            (
+                referred_id,
+            ),
+        )
+
+        await db.commit()
+
+    return True
+
+
+async def get_referral_count(
+    user_id: int,
+) -> int:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+
+            FROM referrals
+
+            WHERE referrer_id = ?
+            """,
+            (
+                user_id,
+            ),
+        )
+
+        row = await cursor.fetchone()
+
+        return row[0] if row else 0
+
+
+# =========================================================
+# AI PROVIDERS
+# =========================================================
+
+async def init_providers(
+    default_order: list[str],
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM ai_providers"
+        )
+
+        count = (
+            await cursor.fetchone()
+        )[0]
+
+        if count > 0:
+            return
+
+        for position, name in enumerate(
+            default_order
+        ):
+
+            await db.execute(
+                """
+                INSERT OR IGNORE
+                INTO ai_providers (
+                    name,
+                    enabled,
+                    position
+                )
+
+                VALUES (?, 1, ?)
+                """,
+                (
+                    name,
+                    position,
+                ),
+            )
+
+        await db.commit()
+
+
+async def get_provider_list():
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        db.row_factory = (
+            aiosqlite.Row
+        )
+
+        cursor = await db.execute(
+            """
+            SELECT *
+
+            FROM ai_providers
+
+            ORDER BY position
+            """
+        )
+
+        rows = await cursor.fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
+
+
+async def get_active_provider_order() -> list[str]:
+
+    providers = (
+        await get_provider_list()
+    )
+
+    return [
+        item["name"]
+        for item in providers
+        if item["enabled"]
+    ]
+
+
+async def toggle_provider(
+    name: str,
+) -> bool | None:
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT enabled
+
+            FROM ai_providers
+
+            WHERE name = ?
+            """,
+            (
+                name,
+            ),
+        )
+
+        row = await cursor.fetchone()
+
+        if not row:
+            return None
+
+        new_value = (
+            0 if row[0] else 1
+        )
+
+        await db.execute(
+            """
+            UPDATE ai_providers
+
+            SET enabled = ?
+
+            WHERE name = ?
+            """,
+            (
+                new_value,
+                name,
+            ),
+        )
+
+        await db.commit()
+
+    return bool(new_value)
+
+
+async def set_provider_order(
+    names: list[str],
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        for position, name in enumerate(
+            names
+        ):
+
+            await db.execute(
+                """
+                UPDATE ai_providers
+
+                SET position = ?
+
+                WHERE name = ?
+                """,
+                (
+                    position,
+                    name,
+                ),
+            )
 
         await db.commit()

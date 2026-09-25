@@ -166,6 +166,20 @@ FAQ_MATCH_THRESHOLD = float(
     )
 )
 
+FREE_FAQ_LIMIT = int(
+    os.getenv(
+        "FREE_FAQ_LIMIT",
+        "20",
+    )
+)
+
+PREMIUM_FAQ_LIMIT = int(
+    os.getenv(
+        "PREMIUM_FAQ_LIMIT",
+        "50",
+    )
+)
+
 
 def parse_admin_ids(
     value: str,

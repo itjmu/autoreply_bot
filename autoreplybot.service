@@ -1,0 +1,22 @@
+[Unit]
+Description=AutoReply Telegram Business Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=autoreply
+WorkingDirectory=/opt/autoreplybot
+EnvironmentFile=/opt/autoreplybot/.env
+ExecStart=/opt/autoreplybot/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+
+# --- Hardening (безопасность на сервере) ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
