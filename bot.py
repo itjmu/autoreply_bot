@@ -3,6 +3,17 @@ import html
 import json
 import logging
 import random
+import re
+
+
+from datetime import (
+    datetime,
+)
+
+from zoneinfo import (
+    ZoneInfo,
+    ZoneInfoNotFoundError,
+)
 
 
 from aiogram import (
@@ -42,8 +53,14 @@ from aiogram.types import (
 )
 
 
+from aiogram.exceptions import (
+    TelegramBadRequest,
+)
+
+
 from ai_service import (
     get_ai_reply,
+    get_all_providers,
     get_configured_providers,
 )
 
@@ -57,6 +74,7 @@ from config import (
 )
 
 from database import (
+    add_chat_message,
     add_faq,
     add_guide_message,
     clear_guide_messages,
@@ -69,7 +87,9 @@ from database import (
     ensure_user,
     get_admin_stats,
     get_all_user_ids,
+    get_all_users_timezones,
     get_allowed_languages,
+    get_chat_history,
     get_chat_settings,
     get_chats_for_roles,
     get_connections,
@@ -80,19 +100,29 @@ from database import (
     get_owner_by_connection,
     get_preferences,
     get_profile,
+    get_provider,
     get_provider_list,
     get_referral_count,
+    get_today_replied_chats,
     get_user_quota_status,
     get_users_for_admin,
     init_db,
     init_providers,
+    is_ai_paused,
+    is_blocked,
     is_referred,
+    mark_bot_reply,
+    mark_report_sent,
     record_referral,
     release_user_ai_slot,
     remember_chat,
+    report_sent,
     reserve_user_ai_slot,
     reset_daily_usage,
+    reset_user_profile_texts,
     save_business_connection,
+    set_ai_pause,
+    set_blocked,
     set_chat_role,
     set_fallback_stage,
     set_global_setting,
@@ -112,6 +142,8 @@ from database import (
     user_exists,
     validate_time,
     validate_timezone,
+    upsert_provider,
+    delete_provider,
 )
 
 from keyboards import (
@@ -120,18 +152,23 @@ from keyboards import (
     admin_menu,
     admin_premium_menu,
     admin_providers_keyboard,
+    admin_user_keyboard,
     admin_users_keyboard,
+    ai_templates_keyboard,
     back_main,
     broadcast_confirm_keyboard,
     chat_manage_menu,
     chat_roles_keyboard,
     faq_list_keyboard,
+    gender_keyboard,
     guide_adding_keyboard,
+    language_keyboard,
     languages_menu,
     main_menu,
     manual_payment_keyboard,
     premium_buy_keyboard,
     profile_menu,
+    provider_type_keyboard,
     referral_menu,
     schedule_menu,
     settings_menu,
@@ -150,6 +187,7 @@ from policy import (
 
 from states import (
     AddFAQ,
+    AddProvider,
     AdminEdit,
     AdminUserSearch,
     Broadcast,
@@ -197,6 +235,90 @@ def is_admin(
     return (
         user_id in ADMIN_IDS
     )
+
+
+async def block_middleware(
+    handler,
+    event,
+    data: dict,
+):
+
+    from_user = data.get(
+        "event_from_user"
+    )
+
+
+    if not from_user:
+
+        return await handler(
+            event,
+            data,
+        )
+
+
+    if is_admin(
+        from_user.id
+    ):
+
+        return await handler(
+            event,
+            data,
+        )
+
+
+    if not await is_blocked(
+        from_user.id
+    ):
+
+        return await handler(
+            event,
+            data,
+        )
+
+
+    if isinstance(
+        event,
+        CallbackQuery,
+    ):
+
+        try:
+
+            await event.answer(
+                "Вы заблокированы",
+                show_alert=True,
+            )
+
+        except Exception:
+
+            pass
+
+
+        return None
+
+
+    try:
+
+        await data["bot"].send_message(
+            from_user.id,
+            "Вы заблокированы",
+        )
+
+    except Exception:
+
+        pass
+
+
+    return None
+
+
+router.message.outer_middleware(
+    block_middleware
+)
+
+
+router.callback_query.outer_middleware(
+    block_middleware
+)
 
 
 async def notify_admins_new_user(
@@ -346,6 +468,148 @@ async def delete_user_message(
         pass
 
 
+def _clip(
+    value: str,
+    limit: int,
+):
+
+    text = str(
+        value
+        or ""
+    )
+
+
+    if len(
+        text
+    ) > limit:
+
+        text = (
+            text[:limit].rstrip()
+            + "…"
+        )
+
+
+    return html.escape(
+        text
+    )
+
+
+def truncate_text(
+    text: str,
+    limit: int = 4096,
+):
+
+    if len(
+        text
+    ) <= limit:
+
+        return text
+
+
+    return (
+        text[: limit - 1].rstrip()
+        + "…"
+    )
+
+
+async def safe_edit_text(
+    message: Message,
+    text: str,
+    **kwargs,
+):
+
+    text = truncate_text(
+        text
+    )
+
+
+    try:
+
+        return await message.edit_text(
+            text,
+            **kwargs,
+        )
+
+
+    except TelegramBadRequest:
+
+        pass
+
+
+    except Exception:
+
+        return None
+
+
+    try:
+
+        kwargs.pop(
+            "parse_mode",
+            None,
+        )
+
+
+        return await message.edit_text(
+            text,
+            **kwargs,
+        )
+
+
+    except Exception:
+
+        return None
+
+
+async def safe_send_message(
+    chat_id: int,
+    text: str,
+    **kwargs,
+):
+
+    text = truncate_text(
+        text
+    )
+
+
+    try:
+
+        return await bot.send_message(
+            chat_id,
+            text,
+            **kwargs,
+        )
+
+
+    except TelegramBadRequest:
+
+        pass
+
+
+    except Exception:
+
+        return None
+
+
+    try:
+
+        kwargs.pop(
+            "parse_mode",
+            None,
+        )
+
+
+        return await bot.send_message(
+            chat_id,
+            text,
+            **kwargs,
+        )
+
+
+    except Exception:
+
+        return None
+
+
 def profile_text(
     profile: dict,
 ):
@@ -355,25 +619,29 @@ def profile_text(
         "👤 <b>ПРОФИЛЬ AI</b>\n\n"
 
         f"Имя / роль: <b>"
-        f"{html.escape(profile['owner_name'] or 'не указано')}"
+        f"{_clip(profile['owner_name'] or 'не указано', 60)}"
         f"</b>\n"
 
         f"Возраст: <b>"
-        f"{html.escape(profile['age'] or 'не указан')}"
+        f"{_clip(profile['age'] or 'не указан', 20)}"
         f"</b>\n"
 
         f"Пол: <b>"
-        f"{html.escape(profile['gender'] or 'не указан')}"
+        f"{_clip(profile['gender'] or 'не указан', 20)}"
+        f"</b>\n"
+
+        f"🌐 Язык: <b>"
+        f"{_clip(profile.get('native_language') or 'не указан', 30)}"
         f"</b>\n\n"
 
         f"💬 <b>Темы владельца:</b>\n"
-        f"{html.escape(profile['topics'] or 'не указаны')}\n\n"
+        f"{_clip(profile['topics'] or 'не указаны', 300)}\n\n"
 
         f"🧠 <b>Характеристика помощника:</b>\n"
-        f"{html.escape(profile['ai_description'] or 'не указана')}\n\n"
+        f"{_clip(profile['ai_description'] or 'не указана', 600)}\n\n"
 
         f"🆘 <b>Запасной ответ:</b>\n"
-        f"{html.escape(profile['fallback_text'])}"
+        f"{_clip(profile['fallback_text'], 300)}"
     )
 
 
@@ -2128,7 +2396,9 @@ async def profile_callback(
     )
 
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+
+        callback.message,
 
         profile_text(
             profile
@@ -2191,7 +2461,9 @@ async def toggle_promo_callback(
     )
 
 
-    await callback.message.edit_text(
+    await safe_edit_text(
+
+        callback.message,
 
         profile_text(
             profile
@@ -2230,6 +2502,9 @@ PROFILE_LABELS = {
     "gender":
         "пол",
 
+    "native_language":
+        "родной / главный язык",
+
     "topics":
         "темы владельца",
 
@@ -2242,6 +2517,73 @@ PROFILE_LABELS = {
     "fallback_text2":
         "второй запасной ответ",
 }
+
+
+AI_DESCRIPTION_TEMPLATES = [
+
+    {
+        "label": "🙂 Вежливый помощник",
+        "text": (
+            "Отвечай вежливо и дружелюбно, "
+            "коротко (1-3 предложения). Не "
+            "придумывай факты, цены и сроки. "
+            "Если не знаешь — предложи "
+            "дождаться ответа владельца."
+        ),
+    },
+
+    {
+        "label": "🛍 Консультант продаж",
+        "text": (
+            "Ты консультант по продажам. "
+            "Помогай выбрать товар или услугу, "
+            "отвечай на вопросы строго по базе "
+            "знаний. Не называй цены, которых "
+            "нет в базе. Уточняй детали, но "
+            "не дави на клиента."
+        ),
+    },
+
+    {
+        "label": "🎧 Поддержка клиентов",
+        "text": (
+            "Ты служба поддержки. Терпеливо "
+            "решай вопросы клиента по базе "
+            "знаний. Если вопрос сложный или "
+            "требует решения владельца — скажи, "
+            "что владелец ответит лично."
+        ),
+    },
+
+    {
+        "label": "📋 Строго по фактам",
+        "text": (
+            "Отвечай только на основе базы "
+            "знаний и профиля. Никаких домыслов, "
+            "цен, сроков и обещаний. Если данных "
+            "не хватает — честно скажи, что "
+            "уточнит владелец."
+        ),
+    },
+
+    {
+        "label": "🇹🇯 Всегда на таджикском",
+        "text": (
+            "Всегда отвечай на таджикском языке, "
+            "кратко и уважительно, даже если "
+            "клиент пишет на другом языке."
+        ),
+    },
+
+    {
+        "label": "🇷🇺 Всегда на русском",
+        "text": (
+            "Всегда отвечай на русском языке, "
+            "кратко и вежливо, даже если клиент "
+            "пишет на другом языке."
+        ),
+    },
+]
 
 
 @router.callback_query(
@@ -2266,6 +2608,54 @@ async def profile_edit_callback(
             "Ошибка",
             show_alert=True,
         )
+
+        return
+
+
+    if field == "gender":
+
+        await callback.message.edit_text(
+            "⚧ Выберите пол:",
+            reply_markup=gender_keyboard(),
+        )
+
+        await callback.answer()
+
+        return
+
+
+    if field == "native_language":
+
+        await callback.message.edit_text(
+
+            "🌐 Выберите главный язык, "
+            "на котором AI будет отвечать:",
+
+            reply_markup=language_keyboard(),
+        )
+
+        await callback.answer()
+
+        return
+
+
+    if field == "ai_description":
+
+        await callback.message.edit_text(
+
+            "🧠 <b>Характеристика / инструкция AI</b>\n\n"
+
+            "Выберите готовый шаблон или "
+            "напишите свой текст:",
+
+            reply_markup=ai_templates_keyboard(
+                AI_DESCRIPTION_TEMPLATES
+            ),
+
+            parse_mode="HTML",
+        )
+
+        await callback.answer()
 
         return
 
@@ -2298,6 +2688,239 @@ async def profile_edit_callback(
         reply_markup=back_main(),
 
         parse_mode="HTML",
+    )
+
+
+    await callback.answer()
+
+
+async def _render_profile(
+    callback: CallbackQuery,
+):
+
+    profile = await get_profile(
+        callback.from_user.id
+    )
+
+
+    await safe_edit_text(
+
+        callback.message,
+
+        profile_text(
+            profile
+        ),
+
+        reply_markup=profile_menu(
+            is_admin=is_admin(
+                callback.from_user.id
+            ),
+            is_premium=(
+                profile["plan"] == "premium"
+            ),
+            show_promo=bool(
+                profile.get("show_promo", 1)
+            ),
+        ),
+
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(
+    F.data.startswith(
+        "profile_gender_set:"
+    )
+)
+async def profile_gender_set_callback(
+    callback: CallbackQuery,
+):
+
+    value = callback.data.split(
+        ":",
+        1,
+    )[1].strip()
+
+
+    await update_profile_field(
+        callback.from_user.id,
+        "gender",
+        value,
+    )
+
+
+    await _render_profile(
+        callback
+    )
+
+
+    await callback.answer(
+        "Сохранено"
+    )
+
+
+@router.callback_query(
+    F.data.startswith(
+        "profile_lang_set:"
+    )
+)
+async def profile_lang_set_callback(
+    callback: CallbackQuery,
+):
+
+    value = callback.data.split(
+        ":",
+        1,
+    )[1].strip()
+
+
+    await update_profile_field(
+        callback.from_user.id,
+        "native_language",
+        value,
+    )
+
+
+    await _render_profile(
+        callback
+    )
+
+
+    await callback.answer(
+        "Сохранено"
+    )
+
+
+@router.callback_query(
+    F.data == "profile_lang_custom"
+)
+async def profile_lang_custom_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+
+    await state.clear()
+
+
+    await state.update_data(
+
+        profile_field=(
+            "native_language"
+        ),
+
+        panel_message_id=(
+            callback.message.message_id
+        ),
+    )
+
+
+    await state.set_state(
+        ProfileEdit.value
+    )
+
+
+    await callback.message.edit_text(
+
+        "✏️ Отправьте название языка.",
+
+        reply_markup=back_main(),
+    )
+
+
+    await callback.answer()
+
+
+@router.callback_query(
+    F.data.startswith(
+        "profile_tpl:"
+    )
+)
+async def profile_tpl_callback(
+    callback: CallbackQuery,
+):
+
+    try:
+
+        index = int(
+            callback.data.split(
+                ":",
+                1,
+            )[1]
+        )
+
+        template = (
+            AI_DESCRIPTION_TEMPLATES[
+                index
+            ]
+        )
+
+    except (
+        ValueError,
+        IndexError,
+    ):
+
+        await callback.answer(
+            "Ошибка",
+            show_alert=True,
+        )
+
+        return
+
+
+    await update_profile_field(
+
+        callback.from_user.id,
+
+        "ai_description",
+
+        template["text"],
+    )
+
+
+    await _render_profile(
+        callback
+    )
+
+
+    await callback.answer(
+        "Инструкция установлена"
+    )
+
+
+@router.callback_query(
+    F.data == "profile_ai_custom"
+)
+async def profile_ai_custom_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+
+    await state.clear()
+
+
+    await state.update_data(
+
+        profile_field=(
+            "ai_description"
+        ),
+
+        panel_message_id=(
+            callback.message.message_id
+        ),
+    )
+
+
+    await state.set_state(
+        ProfileEdit.value
+    )
+
+
+    await callback.message.edit_text(
+
+        "✏️ Отправьте свою инструкцию "
+        "для AI.",
+
+        reply_markup=back_main(),
     )
 
 
@@ -5932,6 +6555,9 @@ def build_providers_text(
 
         "Порядок в списке = порядок "
         "переключения.\n"
+
+        "➕ Добавить / ключи — задать "
+        "ключ или нового провайдера.\n"
     ]
 
 
@@ -5949,18 +6575,45 @@ def build_providers_text(
         )
 
 
-        if name in configured:
+        db_key = (
+            item.get("api_key")
+            or ""
+        ).strip()
 
-            model = configured[
-                name
-            ][
-                "model"
-            ]
+        model = (
+            item.get("model")
+            or ""
+        ).strip()
+
+
+        if not model and name in configured:
+
+            model = str(
+                configured[name].get(
+                    "model",
+                    "",
+                )
+            )
+
+
+        if db_key:
+
+            key_line = (
+                "🔑 ключ: ••••"
+                f"{html.escape(db_key[-4:])}"
+                " (задан в боте)"
+            )
+
+        elif name in configured:
+
+            key_line = (
+                "🔑 ключ: из .env"
+            )
 
         else:
 
-            model = (
-                "ключ не установлен"
+            key_line = (
+                "⚠️ ключ не задан"
             )
 
 
@@ -5970,7 +6623,9 @@ def build_providers_text(
             f"<b>{html.escape(name)}</b>\n"
 
             f"Модель: "
-            f"{html.escape(str(model))}\n"
+            f"{html.escape(model or '—')}\n"
+
+            f"{key_line}\n"
         )
 
 
@@ -6002,7 +6657,7 @@ async def admin_providers_callback(
 
 
     configured = (
-        get_configured_providers()
+        await get_all_providers()
     )
 
 
@@ -6072,7 +6727,7 @@ async def admin_prov_toggle_callback(
 
 
     configured = (
-        get_configured_providers()
+        await get_all_providers()
     )
 
 
@@ -6283,7 +6938,7 @@ async def admin_prov_order_value(
 
 
     configured = (
-        get_configured_providers()
+        await get_all_providers()
     )
 
 
@@ -6324,6 +6979,486 @@ async def admin_prov_order_value(
     except Exception:
 
         pass
+
+
+async def _providers_panel():
+
+    configured = (
+        await get_all_providers()
+    )
+
+    providers = (
+        await get_provider_list()
+    )
+
+    return (
+        build_providers_text(
+            providers,
+            configured,
+        ),
+        admin_providers_keyboard(
+            providers
+        ),
+    )
+
+
+async def _edit_panel(
+    bot: Bot,
+    chat_id: int,
+    message_id,
+    text: str,
+    reply_markup=None,
+):
+
+    if not message_id:
+
+        return
+
+
+    try:
+
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+
+    except Exception:
+
+        pass
+
+
+@router.callback_query(
+    F.data == "admin_prov_add"
+)
+async def admin_prov_add_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await deny_admin(
+            callback
+        )
+
+        return
+
+
+    await state.clear()
+
+
+    await state.update_data(
+        panel_message_id=(
+            callback.message.message_id
+        ),
+    )
+
+
+    await state.set_state(
+        AddProvider.name
+    )
+
+
+    await callback.message.edit_text(
+
+        "➕ <b>Новый провайдер / ключ</b>\n\n"
+
+        "Введи короткое название "
+        "(латиницей, без пробелов).\n\n"
+
+        "Например: <code>openrouter</code>, "
+        "<code>gemini</code>, <code>groq</code> "
+        "или <code>myprovider</code>.\n\n"
+
+        "Если такой уже есть — его ключ "
+        "обновится.",
+
+        reply_markup=admin_back(),
+
+        parse_mode="HTML",
+    )
+
+
+    await callback.answer()
+
+
+@router.message(
+    AddProvider.name
+)
+async def admin_prov_name(
+    message: Message,
+    state: FSMContext,
+):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        await state.clear()
+        return
+
+
+    name = (
+        (message.text or "")
+        .strip()
+        .lower()
+        .replace(" ", "_")
+    )
+
+
+    await delete_user_message(
+        message
+    )
+
+
+    data = await state.get_data()
+
+
+    if not re.match(
+        r"^[a-z0-9_]{2,32}$",
+        name,
+    ):
+
+        await _edit_panel(
+            message.bot,
+            message.chat.id,
+            data.get("panel_message_id"),
+            "❌ Неверное название.\n\n"
+            "Латиница, цифры и _ "
+            "(2-32 символа).",
+            admin_back(),
+        )
+
+        return
+
+
+    await state.update_data(
+        prov_name=name
+    )
+
+
+    await state.set_state(
+        AddProvider.type
+    )
+
+
+    await _edit_panel(
+        message.bot,
+        message.chat.id,
+        data.get("panel_message_id"),
+        f"Провайдер: <b>{html.escape(name)}</b>\n\n"
+        "Выбери тип API:",
+        provider_type_keyboard(),
+    )
+
+
+@router.callback_query(
+    F.data.startswith(
+        "admin_prov_type:"
+    )
+)
+async def admin_prov_type_callback(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await deny_admin(
+            callback
+        )
+
+        return
+
+
+    if await state.get_state() != (
+        AddProvider.type
+    ):
+
+        await callback.answer()
+
+        return
+
+
+    ptype = callback.data.split(
+        ":",
+        1,
+    )[1]
+
+
+    await state.update_data(
+        prov_type=ptype
+    )
+
+
+    await state.set_state(
+        AddProvider.base_url
+    )
+
+
+    if ptype == "compatible":
+
+        prompt = (
+            "Введи <b>base URL</b> API "
+            "(OpenAI-совместимый).\n\n"
+
+            "Например:\n"
+            "<code>"
+            "https://openrouter.ai/api/v1"
+            "</code>"
+        )
+
+    else:
+
+        prompt = (
+            "Введи <b>base URL</b> или "
+            "отправь <code>-</code>, чтобы "
+            "использовать стандартный."
+        )
+
+
+    await callback.message.edit_text(
+        prompt,
+        reply_markup=admin_back(),
+        parse_mode="HTML",
+    )
+
+
+    await callback.answer()
+
+
+@router.message(
+    AddProvider.base_url
+)
+async def admin_prov_base_url(
+    message: Message,
+    state: FSMContext,
+):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        await state.clear()
+        return
+
+
+    value = (
+        message.text or ""
+    ).strip()
+
+
+    await delete_user_message(
+        message
+    )
+
+
+    if value in ("-", "—", ""):
+
+        value = ""
+
+
+    await state.update_data(
+        prov_base_url=value
+    )
+
+
+    await state.set_state(
+        AddProvider.api_key
+    )
+
+
+    data = await state.get_data()
+
+
+    await _edit_panel(
+        message.bot,
+        message.chat.id,
+        data.get("panel_message_id"),
+        "Введи <b>API-ключ</b> провайдера.\n\n"
+        "🔒 Сообщение удалится сразу "
+        "после ввода.",
+        admin_back(),
+    )
+
+
+@router.message(
+    AddProvider.api_key
+)
+async def admin_prov_api_key(
+    message: Message,
+    state: FSMContext,
+):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        await state.clear()
+        return
+
+
+    value = (
+        message.text or ""
+    ).strip()
+
+
+    await delete_user_message(
+        message
+    )
+
+
+    data = await state.get_data()
+
+
+    if not value:
+
+        await _edit_panel(
+            message.bot,
+            message.chat.id,
+            data.get("panel_message_id"),
+            "❌ Ключ пустой.\n\n"
+            "Введи API-ключ:",
+            admin_back(),
+        )
+
+        return
+
+
+    await state.update_data(
+        prov_api_key=value
+    )
+
+
+    await state.set_state(
+        AddProvider.model
+    )
+
+
+    await _edit_panel(
+        message.bot,
+        message.chat.id,
+        data.get("panel_message_id"),
+        "Введи <b>название модели</b>.\n\n"
+        "Например: <code>gpt-4o-mini</code>, "
+        "<code>gemini-1.5-flash</code>, "
+        "<code>llama-3.1-70b-versatile</code>.",
+        admin_back(),
+    )
+
+
+@router.message(
+    AddProvider.model
+)
+async def admin_prov_model(
+    message: Message,
+    state: FSMContext,
+):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
+        await state.clear()
+        return
+
+
+    value = (
+        message.text or ""
+    ).strip()
+
+
+    await delete_user_message(
+        message
+    )
+
+
+    data = await state.get_data()
+
+
+    if not value:
+
+        await _edit_panel(
+            message.bot,
+            message.chat.id,
+            data.get("panel_message_id"),
+            "❌ Модель пустая.\n\n"
+            "Введи название модели:",
+            admin_back(),
+        )
+
+        return
+
+
+    name = data.get("prov_name")
+
+    ptype = (
+        data.get("prov_type")
+        or "compatible"
+    )
+
+    base_url = (
+        data.get("prov_base_url")
+        or ""
+    )
+
+    api_key = (
+        data.get("prov_api_key")
+        or ""
+    )
+
+
+    if ptype == "compatible" and not base_url:
+
+        await state.clear()
+
+
+        await _edit_panel(
+            message.bot,
+            message.chat.id,
+            data.get("panel_message_id"),
+            "❌ Для OpenAI-совместимого типа "
+            "нужен base URL. Начни заново.",
+            admin_back(),
+        )
+
+        return
+
+
+    await upsert_provider(
+        name,
+        ptype,
+        api_key,
+        base_url,
+        value,
+        1,
+    )
+
+
+    await state.clear()
+
+
+    text, markup = (
+        await _providers_panel()
+    )
+
+
+    await _edit_panel(
+        message.bot,
+        message.chat.id,
+        data.get("panel_message_id"),
+        f"✅ <b>Сохранено:</b> "
+        f"{html.escape(name)}\n\n"
+        + text,
+        markup,
+    )
 
 
 ADMIN_USERS_PAGE_SIZE = 20
@@ -6399,12 +7534,12 @@ async def build_admin_users_view(
         f"<b>{pages}</b> · всего "
         f"<b>{total}</b>\n\n"
 
-        + "🆓 Free · ⭐ Premium\n"
+        + "🆓 Free · ⭐ Premium · 🚫 Заблокирован\n"
 
         "В скобках — AI-лимит за сегодня.\n\n"
 
         "Нажмите пользователя, чтобы "
-        "переключить Free / Premium."
+        "открыть его карточку."
     )
 
 
@@ -6723,6 +7858,298 @@ async def admin_users_search_handler(
     )
 
 
+async def build_admin_user_panel(
+    user_id: int,
+):
+
+    profile = await get_profile(
+        user_id
+    )
+
+
+    quota = (
+        await get_user_quota_status(
+            user_id
+        )
+    )
+
+
+    blocked = bool(
+        profile.get("blocked")
+    )
+
+
+    plan_icon = (
+        "⭐ Premium"
+        if profile["plan"] == "premium"
+        else "🆓 Free"
+    )
+
+
+    status_line = (
+        "🚫 <b>ЗАБЛОКИРОВАН</b>\n"
+        if blocked
+        else "🟢 Активен\n"
+    )
+
+
+    username = (
+        profile.get("username")
+        or ""
+    )
+
+
+    username_line = (
+        f"Username: <code>@{html.escape(username)}</code>\n"
+        if username
+        else ""
+    )
+
+
+    name = (
+        profile.get("first_name")
+        or "—"
+    )
+
+
+    owner = (
+        profile.get("owner_name")
+        or "не указано"
+    )
+
+
+    text = (
+
+        "👤 <b>КАРТОЧКА ПОЛЬЗОВАТЕЛЯ</b>\n\n"
+
+        + status_line
+
+        + f"Имя: <b>{html.escape(name)}</b>\n"
+
+        + username_line
+
+        + f"ID: <code>{user_id}</code>\n\n"
+
+        + f"Тариф: {plan_icon}\n"
+
+        + f"AI сегодня: "
+        f"<b>{quota['used']}/{quota['limit']}</b>\n\n"
+
+        + f"Имя / роль: "
+        f"{_clip(owner, 60)}\n"
+
+        + f"💬 Темы: "
+        f"{_clip(profile.get('topics') or 'не указаны', 200)}\n"
+
+        + f"🧠 Характеристика: "
+        f"{_clip(profile.get('ai_description') or 'не указана', 300)}"
+    )
+
+
+    keyboard = admin_user_keyboard(
+        profile
+    )
+
+
+    return text, keyboard
+
+
+@router.callback_query(
+    F.data.startswith(
+        "admin_user:"
+    )
+)
+async def admin_user_callback(
+    callback: CallbackQuery,
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await deny_admin(
+            callback
+        )
+
+        return
+
+
+    try:
+
+        user_id = int(
+            callback.data.split(
+                ":",
+                1,
+            )[1]
+        )
+
+    except ValueError:
+
+        await callback.answer(
+            "Ошибка ID",
+            show_alert=True,
+        )
+
+        return
+
+
+    text, keyboard = (
+        await build_admin_user_panel(
+            user_id
+        )
+    )
+
+
+    await safe_edit_text(
+        callback.message,
+        text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+    await callback.answer()
+
+
+@router.callback_query(
+    F.data.startswith(
+        "admin_block:"
+    )
+)
+async def admin_block_callback(
+    callback: CallbackQuery,
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await deny_admin(
+            callback
+        )
+
+        return
+
+
+    try:
+
+        user_id = int(
+            callback.data.split(
+                ":",
+                1,
+            )[1]
+        )
+
+    except ValueError:
+
+        await callback.answer(
+            "Ошибка ID",
+            show_alert=True,
+        )
+
+        return
+
+
+    current = await is_blocked(
+        user_id
+    )
+
+
+    new_value = (
+        await set_blocked(
+            user_id,
+            not current,
+        )
+    )
+
+
+    text, keyboard = (
+        await build_admin_user_panel(
+            user_id
+        )
+    )
+
+
+    await safe_edit_text(
+        callback.message,
+        text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+    await callback.answer(
+        "Заблокирован"
+        if new_value
+        else "Разблокирован"
+    )
+
+
+@router.callback_query(
+    F.data.startswith(
+        "admin_resetprofile:"
+    )
+)
+async def admin_resetprofile_callback(
+    callback: CallbackQuery,
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+
+        await deny_admin(
+            callback
+        )
+
+        return
+
+
+    try:
+
+        user_id = int(
+            callback.data.split(
+                ":",
+                1,
+            )[1]
+        )
+
+    except ValueError:
+
+        await callback.answer(
+            "Ошибка ID",
+            show_alert=True,
+        )
+
+        return
+
+
+    await reset_user_profile_texts(
+        user_id
+    )
+
+
+    text, keyboard = (
+        await build_admin_user_panel(
+            user_id
+        )
+    )
+
+
+    await safe_edit_text(
+        callback.message,
+        "🧹 Тексты профиля сброшены.\n\n"
+        + text,
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
+
+
+    await callback.answer(
+        "Профиль сброшен"
+    )
+
+
 @router.callback_query(
     F.data.startswith(
         "admin_plan:"
@@ -6770,41 +8197,19 @@ async def admin_plan_callback(
     )
 
 
-    data = await state.get_data()
-
-    query = data.get(
-        "admin_users_query",
-        "",
-    )
-
-    offset = data.get(
-        "admin_users_offset",
-        0,
-    )
-
-
-    text, keyboard, off = (
-        await build_admin_users_view(
-            offset,
-            query,
+    text, keyboard = (
+        await build_admin_user_panel(
+            user_id
         )
     )
 
 
-    await state.update_data(
-        admin_users_offset=off
-    )
-
-
-    await callback.message.edit_text(
-
+    await safe_edit_text(
+        callback.message,
         f"✅ Тариф изменён: "
         f"<b>{new_plan.upper()}</b>\n\n"
-
         + text,
-
         reply_markup=keyboard,
-
         parse_mode="HTML",
     )
 
@@ -6953,10 +8358,46 @@ async def build_promo_signature(
     )
 
 
-    return template.replace(
-        "{link}",
+    safe_url = html.escape(
         link,
+        quote=True,
     )
+
+
+    escaped = html.escape(
+        template
+    )
+
+
+    def _custom_anchor(
+        match,
+    ):
+
+        label = (
+            match.group(1).strip()
+            or "подробнее"
+        )
+
+        return (
+            f'<a href="{safe_url}">'
+            f"{label}</a>"
+        )
+
+
+    escaped = re.sub(
+        r"\{link:([^}]*)\}",
+        _custom_anchor,
+        escaped,
+    )
+
+
+    escaped = escaped.replace(
+        "{link}",
+        f'<a href="{safe_url}">подробнее</a>',
+    )
+
+
+    return escaped
 
 
 async def pick_fallback_text(
@@ -6978,18 +8419,13 @@ async def pick_fallback_text(
 
     if not second:
 
-        return first
+        return html.escape(first)
 
 
     stage = await get_fallback_stage(
         owner_id,
         chat_id,
     )
-
-
-    if stage >= 2:
-
-        return None
 
 
     await set_fallback_stage(
@@ -6999,9 +8435,9 @@ async def pick_fallback_text(
     )
 
 
-    if stage == 0:
+    if stage % 2 == 0:
 
-        return first
+        return html.escape(first)
 
 
     signature = (
@@ -7012,7 +8448,7 @@ async def pick_fallback_text(
     )
 
 
-    return second + signature
+    return html.escape(second) + signature
 
 
 async def send_faq_answer(
@@ -7335,6 +8771,180 @@ async def send_faq_answer(
             )
 
 
+_STOP_AI_COMMANDS = {
+    "стоп ии",
+    "стоп ai",
+    "stop ai",
+    "stop ии",
+    "стоп-ии",
+    "/stop",
+}
+
+
+def _is_stop_command(
+    text: str,
+):
+
+    if not text:
+
+        return False
+
+
+    return (
+        text.strip().lower()
+        in _STOP_AI_COMMANDS
+    )
+
+
+_REASONING_MARKERS = (
+    "user safety:",
+    "user safety :",
+    "the user is asking",
+    "the user is ",
+    "the user asks",
+    "the user wants",
+    "i should respond",
+    "i should reply",
+    "i should not pretend",
+    "i need to respond",
+    "i need to reply",
+    "according to the rules",
+    "according to rule",
+    "rule 7 says",
+    "rule 8 says",
+    "rule 5 says",
+    "rule 7:",
+    "rule 8:",
+    "rule 5:",
+    "<reasoning>",
+    "</reasoning>",
+    "system prompt",
+    "as an ai",
+    "as an assistant",
+)
+
+
+def _looks_like_reasoning(
+    text: str,
+):
+
+    if not text:
+
+        return False
+
+
+    lowered = text.lower()
+
+
+    return any(
+        marker in lowered
+        for marker in _REASONING_MARKERS
+    )
+
+
+_REASONING_BLOCK_RE = re.compile(
+    r"<\s*/?\s*reasoning\s*>",
+    re.IGNORECASE,
+)
+
+_REASONING_PAIR_RE = re.compile(
+    r"<\s*reasoning\s*>.*?<\s*/\s*reasoning\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_reasoning(
+    text: str,
+):
+
+    if not text:
+
+        return ""
+
+
+    cleaned = (
+        _REASONING_PAIR_RE.sub(
+            "",
+            text,
+        )
+    )
+
+
+    cleaned = (
+        _REASONING_BLOCK_RE.sub(
+            "",
+            cleaned,
+        )
+    )
+
+
+    kept = []
+
+
+    for line in cleaned.splitlines():
+
+        lowered = line.lower()
+
+        if any(
+            marker in lowered
+            for marker in _REASONING_MARKERS
+        ):
+
+            continue
+
+        kept.append(line)
+
+
+    result = "\n".join(
+        kept
+    ).strip()
+
+
+    return result
+
+
+async def _send_business_answer(
+    bot: Bot,
+    chat_id: int,
+    connection_id: str,
+    text: str,
+    is_html: bool = False,
+):
+
+    kwargs = {}
+
+    if is_html:
+
+        kwargs["parse_mode"] = "HTML"
+
+
+    try:
+
+        return await bot.send_message(
+            chat_id=chat_id,
+            business_connection_id=(
+                connection_id
+            ),
+            text=text,
+            **kwargs,
+        )
+
+    except TelegramBadRequest:
+
+        if not is_html:
+
+            raise
+
+
+        return await bot.send_message(
+            chat_id=chat_id,
+            business_connection_id=(
+                connection_id
+            ),
+            text=text,
+        )
+
+
 @router.business_message()
 async def business_message_handler(
     message: Message,
@@ -7530,6 +9140,97 @@ async def business_message_handler(
     )
 
 
+    if profile.get("blocked"):
+
+        logger.info(
+            "AutoReply skipped | owner=%s | blocked",
+            owner_id,
+        )
+
+
+        return
+
+
+    # =====================================
+    # СТОП-КОМАНДА: ПАУЗА AI НА ЧАС
+    # =====================================
+
+    if _is_stop_command(
+        user_text
+    ):
+
+        try:
+
+            await set_ai_pause(
+                owner_id,
+                message.chat.id,
+                60,
+            )
+
+
+            await add_chat_message(
+                owner_id,
+                message.chat.id,
+                "user",
+                user_text,
+            )
+
+
+            confirm = (
+                "🤖 Хорошо, помощник не будет "
+                "отвечать в этом чате около часа. "
+                "Если нужно, ответит владелец или "
+                "запасной ответ."
+            )
+
+
+            await bot.send_message(
+
+                chat_id=(
+                    message.chat.id
+                ),
+
+                business_connection_id=(
+                    connection_id
+                ),
+
+                text=confirm,
+            )
+
+
+            await add_chat_message(
+                owner_id,
+                message.chat.id,
+                "assistant",
+                confirm,
+            )
+
+
+            await mark_bot_reply(
+                owner_id,
+                message.chat.id,
+            )
+
+
+        except Exception as error:
+
+            logger.exception(
+                "Stop command error: %s",
+                error,
+            )
+
+
+        return
+
+
+    await add_chat_message(
+        owner_id,
+        message.chat.id,
+        "user",
+        user_text or "[медиа]",
+    )
+
+
     # =====================================
     # MEDIA WITHOUT TEXT
     # =====================================
@@ -7547,24 +9248,31 @@ async def business_message_handler(
             )
 
 
-            if fallback_text is None:
+            if not fallback_text:
 
                 return
 
 
-            await bot.send_message(
+            await _send_business_answer(
+                bot,
+                message.chat.id,
+                connection_id,
+                fallback_text,
+                True,
+            )
 
-                chat_id=(
-                    message.chat.id
-                ),
 
-                business_connection_id=(
-                    connection_id
-                ),
+            await mark_bot_reply(
+                owner_id,
+                message.chat.id,
+            )
 
-                text=(
-                    fallback_text
-                ),
+
+            await add_chat_message(
+                owner_id,
+                message.chat.id,
+                "assistant",
+                fallback_text,
             )
 
 
@@ -7612,6 +9320,9 @@ async def business_message_handler(
     answer = None
 
 
+    answer_is_html = False
+
+
     if faq_item:
 
         logger.info(
@@ -7641,6 +9352,22 @@ async def business_message_handler(
                 faq_item,
             )
 
+
+            await mark_bot_reply(
+                owner_id,
+                message.chat.id,
+            )
+
+
+            await add_chat_message(
+                owner_id,
+                message.chat.id,
+                "assistant",
+                faq_item.get("answer")
+                or "[медиа]",
+            )
+
+
         except Exception as error:
 
             logger.exception(
@@ -7656,6 +9383,14 @@ async def business_message_handler(
     # 2. AI
     # =====================================
 
+    ai_paused = (
+        await is_ai_paused(
+            owner_id,
+            message.chat.id,
+        )
+    )
+
+
     if (
         answer is None
 
@@ -7664,6 +9399,8 @@ async def business_message_handler(
         and profile[
             "ai_enabled"
         ]
+
+        and not ai_paused
     ):
 
         global_settings = (
@@ -7803,36 +9540,61 @@ async def business_message_handler(
                         chat_role=(
                             chat_role
                         ),
+
+                        history=(
+                            await get_chat_history(
+                                owner_id,
+                                message.chat.id,
+                                10,
+                            )
+                        ),
                     )
                 )
 
 
                 if result.ok:
 
-                    answer = (
-                        result.text
+                    cleaned = (
+                        _strip_reasoning(
+                            result.text
+                        )
                     )
+
+                else:
+
+                    cleaned = ""
+
+
+                if cleaned:
+
+                    answer = cleaned
 
 
                     logger.info(
 
                         "AI answer | "
                         "owner=%s | provider=%s "
-                        "| model=%s",
+                        "| model=%s | cleaned=%s",
 
                         owner_id,
 
                         result.provider,
 
                         result.model,
+
+                        _looks_like_reasoning(
+                            result.text
+                        ),
                     )
 
 
                 else:
 
-                    # Все AI не сработали.
-                    # Возвращаем пользователю
-                    # его AI-слот.
+                    # Все AI не сработали
+                    # или ответ полностью
+                    # состоял из внутренних
+                    # рассуждений. Возвращаем
+                    # пользователю его AI-слот.
 
                     await release_user_ai_slot(
                         owner_id
@@ -7841,7 +9603,7 @@ async def business_message_handler(
 
                     logger.warning(
 
-                        "All AI failed | "
+                        "AI failed/leaked | "
                         "owner=%s | error=%s",
 
                         owner_id,
@@ -7880,7 +9642,10 @@ async def business_message_handler(
         )
 
 
-        if answer is None:
+        answer_is_html = True
+
+
+        if not answer:
 
             return
 
@@ -7899,19 +9664,26 @@ async def business_message_handler(
 
     try:
 
-        await bot.send_message(
+        await _send_business_answer(
+            bot,
+            message.chat.id,
+            connection_id,
+            answer,
+            answer_is_html,
+        )
 
-            chat_id=(
-                message.chat.id
-            ),
 
-            business_connection_id=(
-                connection_id
-            ),
+        await mark_bot_reply(
+            owner_id,
+            message.chat.id,
+        )
 
-            text=(
-                answer
-            ),
+
+        await add_chat_message(
+            owner_id,
+            message.chat.id,
+            "assistant",
+            answer,
         )
 
 
@@ -7926,6 +9698,183 @@ async def business_message_handler(
 # =========================================================
 # MAIN
 # =========================================================
+
+def _owner_tz(
+    timezone_name: str,
+):
+
+    try:
+
+        return ZoneInfo(
+            timezone_name or "UTC"
+        )
+
+    except ZoneInfoNotFoundError:
+
+        return ZoneInfo(
+            "UTC"
+        )
+
+
+async def build_daily_report_text(
+    owner_id: int,
+    timezone_name: str,
+):
+
+    chats = (
+        await get_today_replied_chats(
+            owner_id,
+            timezone_name,
+        )
+    )
+
+
+    if not chats:
+
+        return None
+
+
+    lines = []
+
+
+    for chat in chats[:50]:
+
+        name = (
+            chat.get("peer_name")
+            or (
+                f"@{chat['username']}"
+                if chat.get("username")
+                else str(
+                    chat["chat_id"]
+                )
+            )
+        )
+
+
+        lines.append(
+            f"• {html.escape(name)}"
+        )
+
+
+    more = (
+        f"\n… и ещё {len(chats) - 50}"
+        if len(chats) > 50
+        else ""
+    )
+
+
+    return (
+
+        "📋 <b>КТО ПИСАЛ СЕГОДНЯ</b>\n\n"
+
+        f"Бот ответил в <b>{len(chats)}</b> "
+        f"чат(ах):\n\n"
+
+        + "\n".join(lines)
+
+        + more
+
+        + "\n\nНе забудь зайти и "
+        "ответить лично 👋"
+    )
+
+
+async def daily_report_loop(
+    bot: Bot,
+):
+
+    while True:
+
+        try:
+
+            pairs = (
+                await get_all_users_timezones()
+            )
+
+
+            for owner_id, tz_name in pairs:
+
+                try:
+
+                    now = datetime.now(
+                        _owner_tz(tz_name)
+                    )
+
+
+                    date_str = (
+                        now.date().isoformat()
+                    )
+
+
+                    for slot, hour in (
+                        (0, 12),
+                        (1, 19),
+                    ):
+
+                        if now.hour != hour:
+
+                            continue
+
+
+                        if await report_sent(
+                            owner_id,
+                            date_str,
+                            slot,
+                        ):
+
+                            continue
+
+
+                        text = (
+                            await build_daily_report_text(
+                                owner_id,
+                                tz_name,
+                            )
+                        )
+
+
+                        if not text:
+
+                            continue
+
+
+                        await bot.send_message(
+                            owner_id,
+                            text,
+                            parse_mode="HTML",
+                        )
+
+
+                        await mark_report_sent(
+                            owner_id,
+                            date_str,
+                            slot,
+                        )
+
+
+                except Exception as error:
+
+                    logger.exception(
+
+                        "Daily report user error "
+                        "%s: %s",
+
+                        owner_id,
+
+                        error,
+                    )
+
+
+        except Exception as error:
+
+            logger.exception(
+                "Daily report loop error: %s",
+                error,
+            )
+
+
+        await asyncio.sleep(60)
+
 
 async def main():
 
@@ -7979,6 +9928,11 @@ async def main():
         )
         or
         "none",
+    )
+
+
+    asyncio.create_task(
+        daily_report_loop(bot)
     )
 
 

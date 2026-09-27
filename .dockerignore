@@ -1,0 +1,16 @@
+.env
+*.db
+*.db-wal
+*.db-shm
+data/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.venv/
+venv/
+*.md
+Dockerfile
+docker-compose.yml
+.dockerignore

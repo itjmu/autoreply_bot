@@ -160,6 +160,10 @@ async def init_db():
 
                 ai_enabled INTEGER DEFAULT 1,
 
+                blocked INTEGER DEFAULT 0,
+
+                native_language TEXT DEFAULT '',
+
                 plan TEXT DEFAULT 'free'
             )
             """
@@ -267,6 +271,20 @@ async def init_db():
             "INTEGER DEFAULT 1",
         )
 
+        await _add_column_if_missing(
+            db,
+            "users",
+            "blocked",
+            "INTEGER DEFAULT 0",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "users",
+            "native_language",
+            "TEXT DEFAULT ''",
+        )
+
 
         await db.execute(
             """
@@ -317,6 +335,16 @@ async def init_db():
             "faq",
             "answer_payload",
             "TEXT DEFAULT ''",
+        )
+
+
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_faq_owner
+
+            ON faq (owner_id)
+            """
         )
 
 
@@ -499,6 +527,75 @@ async def init_db():
             "INTEGER DEFAULT 0",
         )
 
+        await _add_column_if_missing(
+            db,
+            "chat_settings",
+            "last_bot_reply",
+            "DATETIME",
+        )
+
+        await _add_column_if_missing(
+            db,
+            "chat_settings",
+            "ai_paused_until",
+            "DATETIME",
+        )
+
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS daily_reports (
+
+                owner_id INTEGER NOT NULL,
+
+                report_date TEXT NOT NULL,
+
+                slot INTEGER NOT NULL,
+
+                PRIMARY KEY (
+                    owner_id,
+                    report_date,
+                    slot
+                )
+            )
+            """
+        )
+
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_history (
+
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                owner_id INTEGER NOT NULL,
+
+                chat_id INTEGER NOT NULL,
+
+                role TEXT NOT NULL,
+
+                content TEXT DEFAULT '',
+
+                created_at DATETIME
+                DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_chat_history_lookup
+
+            ON chat_history (
+                owner_id,
+                chat_id,
+                id
+            )
+            """
+        )
+
 
         await db.execute(
             """
@@ -525,9 +622,49 @@ async def init_db():
 
                 enabled INTEGER DEFAULT 1,
 
-                position INTEGER DEFAULT 0
+                position INTEGER DEFAULT 0,
+
+                type TEXT DEFAULT '',
+
+                api_key TEXT DEFAULT '',
+
+                base_url TEXT DEFAULT '',
+
+                model TEXT DEFAULT ''
             )
             """
+        )
+
+
+        await _add_column_if_missing(
+            db,
+            "ai_providers",
+            "type",
+            "TEXT DEFAULT ''",
+        )
+
+
+        await _add_column_if_missing(
+            db,
+            "ai_providers",
+            "api_key",
+            "TEXT DEFAULT ''",
+        )
+
+
+        await _add_column_if_missing(
+            db,
+            "ai_providers",
+            "base_url",
+            "TEXT DEFAULT ''",
+        )
+
+
+        await _add_column_if_missing(
+            db,
+            "ai_providers",
+            "model",
+            "TEXT DEFAULT ''",
         )
 
 
@@ -775,6 +912,7 @@ async def update_profile_field(
         "ai_description",
         "fallback_text",
         "fallback_text2",
+        "native_language",
     }
 
 
@@ -895,6 +1033,102 @@ async def toggle_user_plan(
 
 
     return new_plan
+
+
+async def is_blocked(
+    telegram_id: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT blocked
+
+            FROM users
+
+            WHERE telegram_id = ?
+            """,
+            (
+                telegram_id,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+    return bool(
+        row
+        and row[0]
+    )
+
+
+async def set_blocked(
+    telegram_id: int,
+    value: bool,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            UPDATE users
+
+            SET blocked = ?
+
+            WHERE telegram_id = ?
+            """,
+            (
+                1
+                if value
+                else 0,
+                telegram_id,
+            ),
+        )
+
+
+        await db.commit()
+
+
+    return bool(
+        value
+    )
+
+
+async def reset_user_profile_texts(
+    telegram_id: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            UPDATE users
+
+            SET
+                topics = '',
+                ai_description = '',
+                fallback_text2 = '',
+
+                fallback_text =
+                'Спасибо за сообщение 👋 Владелец аккаунта ответит лично, как только сможет.'
+
+            WHERE telegram_id = ?
+            """,
+            (
+                telegram_id,
+            ),
+        )
+
+
+        await db.commit()
 
 
 async def set_show_promo(
@@ -1925,6 +2159,400 @@ async def remember_chat(
         await db.commit()
 
 
+async def mark_bot_reply(
+    owner_id: int,
+    chat_id: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            UPDATE chat_settings
+
+            SET last_bot_reply =
+                CURRENT_TIMESTAMP
+
+            WHERE owner_id = ?
+            AND chat_id = ?
+            """,
+            (
+                owner_id,
+                chat_id,
+            ),
+        )
+
+
+        await db.commit()
+
+
+def _tz_or_utc(
+    timezone_name: str,
+):
+
+    try:
+
+        return ZoneInfo(
+            timezone_name or "UTC"
+        )
+
+    except ZoneInfoNotFoundError:
+
+        return ZoneInfo(
+            "UTC"
+        )
+
+
+async def get_today_replied_chats(
+    owner_id: int,
+    timezone_name: str = "UTC",
+):
+
+    tz = _tz_or_utc(
+        timezone_name
+    )
+
+
+    now_local = datetime.now(
+        tz
+    )
+
+
+    start_local = now_local.replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+
+
+    start_utc = (
+        start_local.astimezone(
+            timezone.utc
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    )
+
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        db.row_factory = (
+            aiosqlite.Row
+        )
+
+
+        cursor = await db.execute(
+            """
+            SELECT
+                chat_id,
+                peer_name,
+                username
+
+            FROM chat_settings
+
+            WHERE owner_id = ?
+            AND last_bot_reply IS NOT NULL
+            AND last_bot_reply >= ?
+
+            ORDER BY last_bot_reply DESC
+            """,
+            (
+                owner_id,
+                start_utc,
+            ),
+        )
+
+
+        rows = await cursor.fetchall()
+
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+async def report_sent(
+    owner_id: int,
+    report_date: str,
+    slot: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT 1
+
+            FROM daily_reports
+
+            WHERE owner_id = ?
+            AND report_date = ?
+            AND slot = ?
+            """,
+            (
+                owner_id,
+                report_date,
+                slot,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+    return bool(row)
+
+
+async def mark_report_sent(
+    owner_id: int,
+    report_date: str,
+    slot: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            INSERT OR IGNORE INTO daily_reports (
+
+                owner_id,
+                report_date,
+                slot
+            )
+
+            VALUES (?, ?, ?)
+            """,
+            (
+                owner_id,
+                report_date,
+                slot,
+            ),
+        )
+
+
+        await db.commit()
+
+
+async def add_chat_message(
+    owner_id: int,
+    chat_id: int,
+    role: str,
+    content: str,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            INSERT INTO chat_history (
+
+                owner_id,
+                chat_id,
+                role,
+                content
+            )
+
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                owner_id,
+                chat_id,
+                role,
+                (content or "")[:2000],
+            ),
+        )
+
+
+        await db.execute(
+            """
+            DELETE FROM chat_history
+
+            WHERE owner_id = ?
+            AND chat_id = ?
+            AND id NOT IN (
+                SELECT id
+                FROM chat_history
+                WHERE owner_id = ?
+                AND chat_id = ?
+                ORDER BY id DESC
+                LIMIT 20
+            )
+            """,
+            (
+                owner_id,
+                chat_id,
+                owner_id,
+                chat_id,
+            ),
+        )
+
+
+        await db.commit()
+
+
+async def get_chat_history(
+    owner_id: int,
+    chat_id: int,
+    limit: int = 10,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        db.row_factory = (
+            aiosqlite.Row
+        )
+
+
+        cursor = await db.execute(
+            """
+            SELECT role, content
+
+            FROM chat_history
+
+            WHERE owner_id = ?
+            AND chat_id = ?
+
+            ORDER BY id DESC
+
+            LIMIT ?
+            """,
+            (
+                owner_id,
+                chat_id,
+                limit,
+            ),
+        )
+
+
+        rows = await cursor.fetchall()
+
+
+    items = [
+        dict(row)
+        for row in rows
+    ]
+
+
+    items.reverse()
+
+
+    return items
+
+
+async def set_ai_pause(
+    owner_id: int,
+    chat_id: int,
+    minutes: int = 60,
+):
+
+    until = (
+        datetime.now(
+            timezone.utc
+        )
+        + timedelta(
+            minutes=minutes
+        )
+    ).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            UPDATE chat_settings
+
+            SET ai_paused_until = ?
+
+            WHERE owner_id = ?
+            AND chat_id = ?
+            """,
+            (
+                until,
+                owner_id,
+                chat_id,
+            ),
+        )
+
+
+        await db.commit()
+
+
+async def is_ai_paused(
+    owner_id: int,
+    chat_id: int,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT ai_paused_until
+
+            FROM chat_settings
+
+            WHERE owner_id = ?
+            AND chat_id = ?
+            """,
+            (
+                owner_id,
+                chat_id,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+    if (
+        not row
+        or not row[0]
+    ):
+
+        return False
+
+
+    try:
+
+        until = datetime.strptime(
+            row[0],
+            "%Y-%m-%d %H:%M:%S",
+        ).replace(
+            tzinfo=timezone.utc
+        )
+
+    except ValueError:
+
+        return False
+
+
+    return (
+        until
+        > datetime.now(
+            timezone.utc
+        )
+    )
+
+
 async def get_chat_settings(
     owner_id: int,
     chat_id: int,
@@ -2931,7 +3559,8 @@ async def get_users_for_admin(
                 first_name,
                 owner_name,
                 plan,
-                ai_enabled
+                ai_enabled,
+                blocked
 
             FROM users
 
@@ -3008,6 +3637,37 @@ async def get_all_user_ids():
 
         return [
             row[0]
+            for row in rows
+        ]
+
+
+async def get_all_users_timezones():
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT u.telegram_id, p.timezone
+
+            FROM users u
+
+            LEFT JOIN user_preferences p
+
+            ON p.owner_id = u.telegram_id
+            """
+        )
+
+
+        rows = await cursor.fetchall()
+
+
+        return [
+            (
+                row[0],
+                row[1] or "UTC",
+            )
             for row in rows
         ]
 
@@ -3316,5 +3976,134 @@ async def set_provider_order(
                     name,
                 ),
             )
+
+        await db.commit()
+
+
+async def get_provider(
+    name: str,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        db.row_factory = (
+            aiosqlite.Row
+        )
+
+        cursor = await db.execute(
+            """
+            SELECT *
+
+            FROM ai_providers
+
+            WHERE name = ?
+            """,
+            (
+                name,
+            ),
+        )
+
+
+        row = await cursor.fetchone()
+
+
+        return (
+            dict(row)
+            if row
+            else None
+        )
+
+
+async def upsert_provider(
+    name: str,
+    type_: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    enabled: int = 1,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        cursor = await db.execute(
+            """
+            SELECT COALESCE(
+                MAX(position), -1
+            )
+
+            FROM ai_providers
+            """
+        )
+
+
+        max_position = (
+            await cursor.fetchone()
+        )[0]
+
+
+        await db.execute(
+            """
+            INSERT INTO ai_providers (
+                name,
+                enabled,
+                position,
+                type,
+                api_key,
+                base_url,
+                model
+            )
+
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+
+            ON CONFLICT(name) DO UPDATE SET
+
+                enabled = excluded.enabled,
+
+                type = excluded.type,
+
+                api_key = excluded.api_key,
+
+                base_url = excluded.base_url,
+
+                model = excluded.model
+            """,
+            (
+                name,
+                enabled,
+                max_position + 1,
+                type_,
+                api_key,
+                base_url,
+                model,
+            ),
+        )
+
+
+        await db.commit()
+
+
+async def delete_provider(
+    name: str,
+):
+
+    async with _connect(
+        DB_PATH
+    ) as db:
+
+        await db.execute(
+            """
+            DELETE FROM ai_providers
+
+            WHERE name = ?
+            """,
+            (
+                name,
+            ),
+        )
+
 
         await db.commit()

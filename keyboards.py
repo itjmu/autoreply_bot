@@ -131,21 +131,25 @@ def profile_menu(
                 callback_data="profile_edit:gender",
             ),
             InlineKeyboardButton(
-                text="💬 Темы",
-                callback_data="profile_edit:topics",
+                text="🌐 Язык",
+                callback_data="profile_edit:native_language",
             ),
         ],
         [
+            InlineKeyboardButton(
+                text="💬 Темы",
+                callback_data="profile_edit:topics",
+            ),
             InlineKeyboardButton(
                 text="🧠 AI",
                 callback_data="profile_edit:ai_description",
             ),
+        ],
+        [
             InlineKeyboardButton(
                 text="🆘 Запасной",
                 callback_data="profile_edit:fallback_text",
             ),
-        ],
-        [
             InlineKeyboardButton(
                 text="🆘 Запасной 2",
                 callback_data="profile_edit:fallback_text2",
@@ -195,6 +199,136 @@ def profile_menu(
         )
 
     rows.append(bottom)
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+def gender_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="👨 Мужской",
+                    callback_data="profile_gender_set:Мужской",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👩 Женский",
+                    callback_data="profile_gender_set:Женский",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🚫 Не указывать",
+                    callback_data="profile_gender_set: ",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Назад",
+                    callback_data="profile",
+                )
+            ],
+        ]
+    )
+
+
+def language_keyboard():
+
+    langs = [
+        ("🇹🇯 Тоҷикӣ", "таджикский"),
+        ("🇷🇺 Русский", "русский"),
+        ("🇺🇿 Oʻzbek", "узбекский"),
+        ("🇰🇬 Кыргызча", "киргизский"),
+        ("🇰🇿 Қазақша", "казахский"),
+        ("🇬🇧 English", "английский"),
+    ]
+
+
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=label,
+                callback_data=(
+                    f"profile_lang_set:{value}"
+                ),
+            )
+        ]
+        for label, value in langs
+    ]
+
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✍️ Другой",
+                callback_data="profile_lang_custom",
+            )
+        ]
+    )
+
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="profile",
+            )
+        ]
+    )
+
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=rows
+    )
+
+
+def ai_templates_keyboard(
+    templates: list,
+):
+
+    rows = []
+
+
+    for index, item in enumerate(
+        templates
+    ):
+
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=item["label"],
+                    callback_data=(
+                        f"profile_tpl:{index}"
+                    ),
+                )
+            ]
+        )
+
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="✍️ Свой текст",
+                callback_data="profile_ai_custom",
+            )
+        ]
+    )
+
+
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text="⬅️ Назад",
+                callback_data="profile",
+            )
+        ]
+    )
+
 
     return InlineKeyboardMarkup(
         inline_keyboard=rows
@@ -727,6 +861,12 @@ def admin_users_keyboard(
             "🆓"
         )
 
+
+        if user.get("blocked"):
+
+            icon = "🚫"
+
+
         name = (
             user["owner_name"]
             or user["first_name"]
@@ -750,7 +890,7 @@ def admin_users_keyboard(
                         f"[{user['ai_used']}/{user['ai_limit']}]"
                     ),
                     callback_data=(
-                        f"admin_plan:{user['telegram_id']}"
+                        f"admin_user:{user['telegram_id']}"
                     ),
                 )
             ]
@@ -822,6 +962,65 @@ def admin_users_keyboard(
     )
 
 
+def admin_user_keyboard(
+    user: dict,
+):
+
+    user_id = user["telegram_id"]
+
+
+    blocked = bool(
+        user.get("blocked")
+    )
+
+
+    block_text = (
+        "✅ Разблокировать"
+        if blocked
+        else "🚫 Заблокировать"
+    )
+
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+
+            [
+                InlineKeyboardButton(
+                    text="💎 Сменить тариф",
+                    callback_data=(
+                        f"admin_plan:{user_id}"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text=block_text,
+                    callback_data=(
+                        f"admin_block:{user_id}"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text="🧹 Сбросить тексты профиля",
+                    callback_data=(
+                        f"admin_resetprofile:{user_id}"
+                    ),
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    text="⬅️ К списку",
+                    callback_data="admin_users",
+                )
+            ],
+        ]
+    )
+
+
 def admin_providers_keyboard(
     providers: list,
 ):
@@ -856,6 +1055,15 @@ def admin_providers_keyboard(
     rows.append(
         [
             InlineKeyboardButton(
+                text="➕ Добавить / ключи",
+                callback_data="admin_prov_add",
+            )
+        ]
+    )
+
+    rows.append(
+        [
+            InlineKeyboardButton(
                 text="🔄 Изменить порядок",
                 callback_data="admin_prov_order",
             )
@@ -873,6 +1081,44 @@ def admin_providers_keyboard(
 
     return InlineKeyboardMarkup(
         inline_keyboard=rows
+    )
+
+
+def provider_type_keyboard():
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="OpenAI-совместимый",
+                    callback_data=(
+                        "admin_prov_type:compatible"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="OpenAI",
+                    callback_data=(
+                        "admin_prov_type:openai"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Gemini",
+                    callback_data=(
+                        "admin_prov_type:gemini"
+                    ),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Отмена",
+                    callback_data="admin_providers",
+                )
+            ],
+        ]
     )
 
 
