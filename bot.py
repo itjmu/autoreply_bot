@@ -560,56 +560,6 @@ async def safe_edit_text(
         return None
 
 
-async def safe_send_message(
-    chat_id: int,
-    text: str,
-    **kwargs,
-):
-
-    text = truncate_text(
-        text
-    )
-
-
-    try:
-
-        return await bot.send_message(
-            chat_id,
-            text,
-            **kwargs,
-        )
-
-
-    except TelegramBadRequest:
-
-        pass
-
-
-    except Exception:
-
-        return None
-
-
-    try:
-
-        kwargs.pop(
-            "parse_mode",
-            None,
-        )
-
-
-        return await bot.send_message(
-            chat_id,
-            text,
-            **kwargs,
-        )
-
-
-    except Exception:
-
-        return None
-
-
 def profile_text(
     profile: dict,
 ):
