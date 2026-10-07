@@ -62,8 +62,7 @@ def find_blocked_topic(
 
         if (
             normalized_topic
-            and normalized_topic
-            in normalized_text
+            and re.search(r"(?<!\w)" + re.escape(normalized_topic) + r"(?!\w)", normalized_text)
         ):
             return topic
 

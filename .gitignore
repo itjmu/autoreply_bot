@@ -1,4 +1,10 @@
 .env
+*.db.backup-*
+.tools/
+backups/
+*.sqlite3
+*.bot.lock
+*.log
 
 __pycache__/
 *.pyc

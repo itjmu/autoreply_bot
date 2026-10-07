@@ -923,15 +923,12 @@ async def update_profile_field(
         )
 
 
-    await ensure_user(
-        telegram_id
-    )
+    if len(value) > (2000 if field in {"ai_description", "fallback_text", "fallback_text2", "topics"} else 120):
+        raise ValueError("Profile value too long")
 
+    await ensure_user(telegram_id)
 
-    async with _connect(
-        DB_PATH
-    ) as db:
-
+    async with _connect(DB_PATH) as db:
         await db.execute(
             f"""
             UPDATE users
@@ -1161,60 +1158,16 @@ async def set_show_promo(
     return bool(value)
 
 
-async def set_premium(
-    telegram_id: int,
-    days: int | None = None,
-):
-
-    await ensure_user(
-        telegram_id
-    )
-
-
-    if days:
-
-        until = (
-            datetime.now(
-                timezone.utc
-            )
-            + timedelta(
-                days=days
-            )
-        )
-
-        premium_until = (
-            until.isoformat()
-        )
-
-    else:
-
-        premium_until = ""
-
-
-    async with _connect(
-        DB_PATH
-    ) as db:
-
-        await db.execute(
-            """
-            UPDATE users
-
-            SET plan = 'premium',
-            premium_until = ?
-
-            WHERE telegram_id = ?
-            """,
-            (
-                premium_until,
-                telegram_id,
-            ),
-        )
-
-
+async def set_premium(telegram_id: int, days: int | None = None):
+    from extensions import extended_expiry
+    await ensure_user(telegram_id)
+    async with _connect() as db:
+        await db.execute("BEGIN IMMEDIATE")
+        row = await (await db.execute("SELECT premium_until FROM users WHERE telegram_id=?", (telegram_id,))).fetchone()
+        until = extended_expiry(row[0], days) if days is not None else ""
+        await db.execute("UPDATE users SET plan='premium',premium_until=? WHERE telegram_id=?", (until,telegram_id))
         await db.commit()
-
-
-    return premium_until
+        return until
 
 
 # =========================================================
@@ -3185,6 +3138,7 @@ async def reserve_user_ai_slot(
     return {
 
         "allowed": True,
+        "day": day,
 
         "used":
             used + 1,
@@ -3196,11 +3150,10 @@ async def reserve_user_ai_slot(
 
 async def release_user_ai_slot(
     owner_id: int,
+    day: str | None = None,
 ):
 
-    day = await _owner_usage_day(
-        owner_id
-    )
+    day = day or await _owner_usage_day(owner_id)
 
 
     async with _connect(
@@ -3740,9 +3693,9 @@ async def record_referral(
         DB_PATH
     ) as db:
 
-        await db.execute(
+        cursor = await db.execute(
             """
-            INSERT INTO referrals (
+            INSERT OR IGNORE INTO referrals (
                 referrer_id,
                 referred_id
             )
@@ -3754,6 +3707,10 @@ async def record_referral(
                 referred_id,
             ),
         )
+
+        if cursor.rowcount != 1:
+            await db.rollback()
+            return False
 
         await db.execute(
             """

@@ -1,4 +1,5 @@
 import os
+import math
 
 from dotenv import load_dotenv
 
@@ -10,6 +11,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 USE_AI = os.getenv("USE_AI", "true").lower() == "true"
 AI_TIMEOUT = float(os.getenv("AI_TIMEOUT", "40"))
+AI_TOTAL_TIMEOUT = float(os.getenv("AI_TOTAL_TIMEOUT", "45"))
+AI_CONCURRENCY = int(os.getenv("AI_CONCURRENCY", "4"))
+CHAT_DEBOUNCE = float(os.getenv("CHAT_DEBOUNCE", "1.5"))
+HISTORY_RETENTION_DAYS = int(os.getenv("HISTORY_RETENTION_DAYS", "30"))
 AI_MAX_TOKENS = int(os.getenv("AI_MAX_TOKENS", "350"))
 
 AI_PROVIDER_COOLDOWN = int(
@@ -205,6 +210,17 @@ ADMIN_IDS = parse_admin_ids(
         "",
     )
 )
+
+for name,value in {'AI_TIMEOUT':AI_TIMEOUT,'AI_TOTAL_TIMEOUT':AI_TOTAL_TIMEOUT}.items():
+    if not math.isfinite(value) or value<=0:
+        raise ValueError(f'{name} must be a positive finite number')
+for name,value in {'AUTO_REPLY_DELAY':AUTO_REPLY_DELAY,'CHAT_DEBOUNCE':CHAT_DEBOUNCE}.items():
+    if not math.isfinite(value) or value<0:
+        raise ValueError(f'{name} must be a non-negative finite number')
+if AI_CONCURRENCY<1 or AI_MAX_TOKENS<1 or HISTORY_RETENTION_DAYS<1 or AI_PROVIDER_COOLDOWN<0:
+    raise ValueError('Invalid AI concurrency, token limit, retention or cooldown')
+if not math.isfinite(FAQ_MATCH_THRESHOLD) or not 0<=FAQ_MATCH_THRESHOLD<=1:
+    raise ValueError('FAQ_MATCH_THRESHOLD must be between 0 and 1')
 
 
 if not BOT_TOKEN:

@@ -38,6 +38,11 @@ def similarity(
         second
     )
 
+    return _normalized_similarity(first, second)
+
+
+def _normalized_similarity(first, second, minimum=0.0):
+
     if not first or not second:
         return 0.0
 
@@ -48,19 +53,22 @@ def similarity(
         len(first) >= 5
         and first in second
     ):
-        return 0.95
+        return 0.0
 
     if (
         len(second) >= 5
         and second in first
     ):
-        return 0.95
+        return 0.0
 
-    return SequenceMatcher(
+    matcher = SequenceMatcher(
         None,
         first,
         second,
-    ).ratio()
+    )
+    if matcher.real_quick_ratio() <= minimum or matcher.quick_ratio() <= minimum:
+        return 0.0
+    return matcher.ratio()
 
 
 def find_direct_answer(
@@ -71,17 +79,17 @@ def find_direct_answer(
 
     best_item = None
     best_score = 0.0
+    normalized = normalize_text(user_text)
 
     for item in faqs:
 
-        score = similarity(
-            user_text,
-            item["question"],
-        )
+        score = _normalized_similarity(normalized, normalize_text(item["question"]), best_score)
 
         if score > best_score:
             best_score = score
             best_item = item
+            if best_score == 1.0:
+                return best_item, best_score
 
     if (
         best_item
@@ -105,13 +113,11 @@ def select_ai_context(
 ):
 
     scored = []
+    normalized = normalize_text(user_text)
 
     for item in faqs:
 
-        score = similarity(
-            user_text,
-            item["question"],
-        )
+        score = _normalized_similarity(normalized, normalize_text(item["question"]))
 
         scored.append(
             (

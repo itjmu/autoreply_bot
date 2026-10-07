@@ -2,6 +2,7 @@ import asyncio
 import html
 import json
 import logging
+import math
 import random
 import re
 
@@ -46,6 +47,8 @@ from aiogram.types import (
     InputMediaPhoto,
     InputMediaVideo,
     InputPollOption,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     LabeledPrice,
     Message,
     MessageEntity,
@@ -55,6 +58,7 @@ from aiogram.types import (
 
 from aiogram.exceptions import (
     TelegramBadRequest,
+    TelegramRetryAfter,
 )
 
 
@@ -221,7 +225,6 @@ router = Router(
 )
 
 
-_bot_username = ""
 
 
 # =========================================================
@@ -242,6 +245,9 @@ async def block_middleware(
     event,
     data: dict,
 ):
+    # Already-paid receipts must be reconciled even if an account was subsequently blocked.
+    if isinstance(event, Message) and event.successful_payment:
+        return await handler(event, data)
 
     from_user = data.get(
         "event_from_user"
@@ -374,61 +380,9 @@ async def notify_admins_new_user(
             )
 
 
-async def build_main_markup(
-    user_id: int,
-):
-
-    profile = await get_profile(
-        user_id
-    )
-
-
-    quota = (
-        await get_user_quota_status(
-            user_id
-        )
-    )
-
-
-    prefs = await get_preferences(
-        user_id
-    )
-
-
-    return main_menu(
-
-        ai_enabled=bool(
-            profile[
-                "ai_enabled"
-            ]
-        ),
-
-        ai_used=(
-            quota["used"]
-        ),
-
-        ai_limit=(
-            quota["limit"]
-        ),
-
-        global_ai_enabled=(
-            quota[
-                "global_enabled"
-            ]
-        ),
-
-        autoreply_enabled=bool(
-            prefs[
-                "autoreply_enabled"
-            ]
-        ),
-
-        is_admin=(
-            is_admin(
-                user_id
-            )
-        ),
-    )
+async def build_main_markup(user_id: int):
+    from experience import home_markup
+    return await home_markup(user_id)
 
 
 async def show_main_callback(
@@ -824,6 +778,8 @@ async def start_handler(
     state: FSMContext,
 ):
 
+    from extensions import options
+    await options(message.from_user.id, message.from_user.language_code)
     await state.clear()
 
 
@@ -1044,24 +1000,8 @@ async def start_handler(
 
     # =====================================
     # NORMAL START
-    # =====================================
-
-    await message.answer(
-
-        "🤖 <b>AutoReply</b>\n\n"
-
-        "Создавайте свои вопросы и ответы, "
-        "настраивайте AI, языки, график "
-        "и Telegram Business.",
-
-        reply_markup=(
-            await build_main_markup(
-                message.from_user.id
-            )
-        ),
-
-        parse_mode="HTML",
-    )
+    from experience import show_welcome
+    await show_welcome(message)
 
 
 @router.callback_query(
@@ -1207,10 +1147,7 @@ async def referrals_callback(
         user_id
     )
 
-    link = (
-        f"https://t.me/{_bot_username}"
-        f"?start=ref_{user_id}"
-    )
+    link = await build_ref_link(user_id, callback.bot)
 
     await callback.message.edit_text(
         "🎁 <b>РЕФЕРАЛЫ</b>\n\n"
@@ -1610,8 +1547,8 @@ def serialize_answer(
 
         return {
             "type": "voice",
-            "text": "",
-            "entities": [],
+            "text": message.caption or "",
+            "entities": _entities_to_dicts(message.caption_entities),
             "file_id": message.voice.file_id,
             "payload": {},
         }
@@ -1638,7 +1575,7 @@ def serialize_answer(
             "payload": {},
         }
 
-    if message.location:
+    if message.location and not message.venue:
 
         location = message.location
 
@@ -1720,11 +1657,15 @@ def serialize_answer(
             "file_id": "",
             "payload": {
                 "question": poll.question,
+                "question_entities": _entities_to_dicts(poll.question_entities),
+                "explanation": poll.explanation,
+                "explanation_entities": _entities_to_dicts(poll.explanation_entities),
                 "options": options,
                 "is_anonymous": (
                     poll.is_anonymous
                 ),
                 "type": poll.type,
+                "correct_option_id": getattr(poll, 'correct_option_id', None),
                 "allow_multiple_answers": (
                     poll.allows_multiple_answers
                 ),
@@ -1960,6 +1901,9 @@ async def _flush_album(
     if not buf or not buf["items"]:
 
         return
+    current_data = await buf['state'].get_data()
+    if await buf['state'].get_state() != AddFAQ.answer.state or current_data.get('question') != buf['data'].get('question'):
+        return
 
 
     spec = {
@@ -1973,15 +1917,10 @@ async def _flush_album(
     }
 
 
-    await _finalize_faq(
-        buf["owner_id"],
-        buf["data"],
-        buf["chat_id"],
-        spec,
-        buf["bot"],
-        buf["state"],
-        delete_msg=None,
-    )
+    try:
+        await _finalize_faq(buf['owner_id'],buf['data'],buf['chat_id'],spec,buf['bot'],buf['state'],delete_msg=None)
+    except Exception:
+        logger.exception('Legacy FAQ album failed')
 
 
 async def _buffer_album_item(
@@ -2910,6 +2849,11 @@ async def profile_value_handler(
         return
 
 
+    max_length = 2000 if field in {"ai_description", "fallback_text", "fallback_text2", "topics"} else 120
+    if len(message.text.strip()) > max_length:
+        await message.answer(f"Maximum: {max_length} characters. Please shorten the text.")
+        return
+
     await update_profile_field(
 
         message.from_user.id,
@@ -3750,6 +3694,11 @@ async def buy_premium_callback(
         return
 
 
+    from extensions import issue_invoice
+    from experience import language, choose
+    lang = await language(callback.from_user)
+    invoice_payload = await issue_invoice(callback.from_user.id, period, info["days"], price)
+
     await bot.send_invoice(
 
         chat_id=(
@@ -3757,15 +3706,15 @@ async def buy_premium_callback(
         ),
 
         title=(
-            info["title"]
+            choose(lang, info['title'], 'Premium '+period)
         ),
 
         description=(
-            "Активация Premium-тарифа"
+            choose(lang,'Активация Premium-тарифа','Activate Premium subscription')
         ),
 
         payload=(
-            f"premium:{period}"
+            invoice_payload
         ),
 
         currency="XTR",
@@ -3788,88 +3737,30 @@ async def buy_premium_callback(
 
 
 @router.pre_checkout_query()
-async def pre_checkout_handler(
-    query: PreCheckoutQuery,
-):
-
-    await query.answer(
-        ok=True
-    )
+async def pre_checkout_handler(query: PreCheckoutQuery):
+    from extensions import validate_invoice
+    valid = not await is_blocked(query.from_user.id) and await validate_invoice(query.invoice_payload, query.from_user.id, query.currency, query.total_amount)
+    await query.answer(ok=valid, error_message=None if valid else "Invoice expired or invalid. Please create a new invoice.")
 
 
 @router.message(
     F.successful_payment
 )
-async def successful_payment_handler(
-    message: Message,
-):
-
-    payment = (
-        message.successful_payment
-    )
-
-
-    payload = (
-        payment.invoice_payload
-        or ""
-    )
-
-
-    info = None
-
-
-    if payload.startswith(
-        "premium:"
-    ):
-
-        info = (
-            PREMIUM_PERIODS.get(
-                payload.split(
-                    ":",
-                    1,
-                )[1]
-            )
-        )
-
-
-    if not info:
-
-        await message.answer(
-            "✅ Оплата получена."
-        )
-
+async def successful_payment_handler(message: Message):
+    from extensions import apply_payment, recover_legacy_invoice
+    payment = message.successful_payment
+    try:
+        payload = payment.invoice_payload
+        if payload in {'premium:week','premium:month'}:
+            payload = await recover_legacy_invoice(payload,message.from_user.id,payment.currency,payment.total_amount,payment.telegram_payment_charge_id)
+        until, applied = await apply_payment(payload, message.from_user.id, payment.currency, payment.total_amount, payment.telegram_payment_charge_id)
+    except ValueError:
+        logger.error("Unmatched payment for owner %s; requires reconciliation", message.from_user.id)
+        await message.answer("Payment requires review. Contact the administrator with your payment receipt.")
         return
-
-
-    await set_premium(
-
-        message.from_user.id,
-
-        days=info[
-            "days"
-        ],
-    )
-
-
-    await message.answer(
-
-        "🎉 <b>Premium активирован!</b>\n\n"
-
-        f"Тариф: <b>{info['title']}</b>\n"
-
-        f"Оплачено: "
-        f"<b>{payment.total_amount}⭐</b>\n\n"
-
-        "Спасибо за поддержку ❤️",
-
-        reply_markup=(
-            await build_main_markup(
-                message.from_user.id
-            )
-        ),
-
-        parse_mode="HTML",
-    )
+    from experience import language, choose
+    lang = await language(message.from_user)
+    await message.answer(choose(lang,'Premium активен до ','Premium active until ')+html.escape(until[:10])+' ✅', reply_markup=await build_main_markup(message.from_user.id))
 
 
 @router.callback_query(
@@ -5385,6 +5276,31 @@ async def admin_broadcast_callback(
     await callback.answer()
 
 
+_broadcast_album_tasks = {}
+
+
+async def _finish_broadcast_album(message, state, bot, token):
+    try:
+        await asyncio.sleep(2.5)
+        data = await state.get_data()
+        if await state.get_state() != Broadcast.waiting.state or data.get("broadcast_album_token") != token:
+            return
+        ids = sorted(set(data.get("broadcast_album_ids", [])))
+        await broadcast_message_handler(message.model_copy(update={"media_group_id": None}), state, bot, album_ids=ids)
+    except Exception:
+        logger.exception("Could not prepare broadcast album")
+    finally:
+        if _broadcast_album_tasks.get(state.key) is asyncio.current_task():
+            _broadcast_album_tasks.pop(state.key, None)
+
+
+async def shutdown_broadcast_albums():
+    tasks = list(_broadcast_album_tasks.values())
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @router.message(
     Broadcast.waiting
 )
@@ -5392,6 +5308,7 @@ async def broadcast_message_handler(
     message: Message,
     state: FSMContext,
     bot: Bot,
+    album_ids=None,
 ):
 
     if not is_admin(
@@ -5400,6 +5317,19 @@ async def broadcast_message_handler(
 
         await state.clear()
 
+        return
+
+    if message.media_group_id:
+        import secrets
+        data = await state.get_data()
+        ids = data.get("broadcast_album_ids", []) if data.get("broadcast_album_group") == message.media_group_id else []
+        ids.append(message.message_id)
+        token = secrets.token_urlsafe(8)
+        await state.update_data(broadcast_album_ids=ids[:10], broadcast_album_group=message.media_group_id, broadcast_album_token=token)
+        old = _broadcast_album_tasks.get(state.key)
+        if old:
+            old.cancel()
+        _broadcast_album_tasks[state.key] = asyncio.create_task(_finish_broadcast_album(message, state, bot, token))
         return
 
 
@@ -5422,27 +5352,9 @@ async def broadcast_message_handler(
         return
 
 
-    if message.forward_origin is None:
-
-        if (
-            message.text is None
-            and message.caption is None
-            and message.document is None
-            and message.photo is None
-            and message.video is None
-            and message.audio is None
-            and message.voice is None
-            and message.animation is None
-            and message.video_note is None
-            and message.sticker is None
-        ):
-
-            await message.answer(
-                "❌ Такой тип сообщения "
-                "не поддерживается."
-            )
-
-            return
+    if message.forward_origin is None and serialize_answer(message) is None:
+        await message.answer("❌ Такой тип сообщения не поддерживается.")
+        return
 
 
     user_ids = (
@@ -5478,7 +5390,7 @@ async def broadcast_message_handler(
 
 
     await state.update_data(
-
+        broadcast_album_ids=album_ids or [],
         broadcast_chat_id=(
             message.chat.id
         ),
@@ -5580,6 +5492,13 @@ async def broadcast_confirm_callback(
     from_message_id = data.get(
         "broadcast_message_id"
     )
+    album_ids = data.get("broadcast_album_ids", [])
+
+    async def copy_broadcast(user_id):
+        if album_ids:
+            await bot.copy_messages(chat_id=user_id, from_chat_id=from_chat_id, message_ids=album_ids)
+        else:
+            await bot.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=from_message_id)
 
     interval = data.get(
         "broadcast_interval",
@@ -5631,13 +5550,20 @@ async def broadcast_confirm_callback(
 
         try:
 
-            await bot.copy_message(
-                chat_id=user_id,
-                from_chat_id=from_chat_id,
-                message_id=from_message_id,
-            )
+            await copy_broadcast(user_id)
 
             delivered += 1
+
+        except TelegramRetryAfter as error:
+            if error.retry_after <= 60:
+                await asyncio.sleep(error.retry_after)
+                try:
+                    await copy_broadcast(user_id)
+                    delivered += 1
+                except Exception:
+                    failed += 1
+            else:
+                failed += 1
 
         except Exception:
 
@@ -6349,7 +6275,7 @@ async def admin_edit_value_handler(
 
             interval_value = -1.0
 
-        if interval_value < 0:
+        if not math.isfinite(interval_value) or interval_value < 0:
 
             await message.answer(
                 "❌ Отправьте число секунд "
@@ -8236,6 +8162,11 @@ async def business_connection_handler(
 
         connection.is_enabled,
     )
+    if not connection.is_enabled:
+        from business_runtime import _workers, invalidate
+        for owner_id, chat_id in list(_workers):
+            if owner_id == connection.user.id:
+                invalidate(owner_id, chat_id)
 
 
     logger.info(
@@ -8255,17 +8186,19 @@ async def business_connection_handler(
 
 async def build_ref_link(
     owner_id: int,
+    bot: Bot,
 ) -> str:
-
-    return (
-        f"https://t.me/{_bot_username}"
-        f"?start=ref_{owner_id}"
-    )
+    me = await bot.me()
+    username = me.username
+    if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_]+", username):
+        raise ValueError("Cannot build a referral link without the active bot username")
+    return f"https://t.me/{username}?start=ref_{owner_id}"
 
 
 async def build_promo_signature(
     owner_id: int,
     profile: dict,
+    bot: Bot,
 ) -> str:
 
     is_premium = (
@@ -8303,9 +8236,7 @@ async def build_promo_signature(
         return ""
 
 
-    link = await build_ref_link(
-        owner_id
-    )
+    link = await build_ref_link(owner_id, bot)
 
 
     safe_url = html.escape(
@@ -8350,16 +8281,47 @@ async def build_promo_signature(
     return escaped
 
 
+async def send_fallback_message(bot, owner_id, chat_id, connection_id, profile):
+    import extensions as ext
+    opts = await ext.options(owner_id)
+    stored = await ext.fallback_messages(owner_id)
+    slots = range(2) if opts["ui_mode"] == "business" else range(1)
+    specs = []
+    for slot in slots:
+        spec = stored.get(slot)
+        legacy = profile.get("fallback_text" if slot == 0 else "fallback_text2" if slot == 1 else "fallback_text3", "")
+        if spec:
+            specs.append(spec)
+        elif legacy:
+            specs.append({"type": "text", "text": legacy})
+    if not specs:
+        return False
+    stage = await get_fallback_stage(owner_id, chat_id)
+    spec = specs[stage % len(specs)]
+    promo = profile.get("plan") != "premium" or profile.get("show_promo", 1)
+    keyboard = None
+    if promo:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤖 AutoReply", url=await build_ref_link(owner_id, bot))]])
+    item = {"answer_type": spec["type"], "answer": spec.get("text", ""), "answer_file_id": spec.get("file_id", ""), "answer_entities": json.dumps(spec.get("entities", [])), "answer_payload": json.dumps(spec.get("payload", {}))}
+    await send_faq_answer(bot, chat_id, connection_id, item, reply_markup=keyboard)
+    await set_fallback_stage(owner_id, chat_id, stage + 1)
+    return True
+
+
 async def pick_fallback_text(
     owner_id: int,
     chat_id: int,
     profile: dict,
+    bot: Bot,
 ):
 
     first = (
         profile.get("fallback_text")
         or ""
     )
+    import extensions as ext
+    if (await ext.options(owner_id))["ui_mode"] != "business":
+        return html.escape(first)
 
     second = (
         profile.get("fallback_text2")
@@ -8394,6 +8356,7 @@ async def pick_fallback_text(
         await build_promo_signature(
             owner_id,
             profile,
+            bot,
         )
     )
 
@@ -8406,6 +8369,7 @@ async def send_faq_answer(
     chat_id: int,
     connection_id: str,
     item: dict,
+    reply_markup=None,
 ):
 
     answer_type = (
@@ -8438,13 +8402,44 @@ async def send_faq_answer(
             connection_id
         ),
     }
+    if reply_markup is None and payload.get("buttons"):
+        from button_layout import button_rows
+        buttons = []
+        for row in button_rows(payload):
+            rendered = []
+            for button in row:
+                if "url" in button:
+                    rendered.append(InlineKeyboardButton(**button))
+                elif item.get("owner_id") and item.get("id"):
+                    rendered.append(InlineKeyboardButton(text=button["text"], callback_data=f"fqcall:{item['owner_id']}:{item['id']}:{button['command'][1:]}"))
+            if rendered:
+                buttons.append(rendered)
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    if reply_markup is not None and answer_type != "media_group":
+        common["reply_markup"] = reply_markup
+
+    if answer_type == "sequence":
+        for spec in payload.get("items", []):
+            child = {"answer_type": spec["type"], "answer": spec.get("text", ""), "answer_file_id": spec.get("file_id", ""), "answer_entities": json.dumps(spec.get("entities", [])), "answer_payload": json.dumps(spec.get("payload", {}))}
+            await send_faq_answer(bot, chat_id, connection_id, child, reply_markup=reply_markup)
+        return
+    if answer_type == "forward":
+        if connection_id:
+            spec = payload.get("copy")
+            if not spec:
+                raise ValueError("Telegram does not support forwarding on behalf of a connected account")
+            await send_faq_answer(bot, chat_id, connection_id, {"answer_type": spec["type"], "answer": spec.get("text", ""), "answer_file_id": spec.get("file_id", ""), "answer_entities": json.dumps(spec.get("entities", [])), "answer_payload": json.dumps(spec.get("payload", {}))}, reply_markup=reply_markup)
+            return
+        await bot.forward_message(chat_id=chat_id, from_chat_id=payload["from_chat_id"], message_id=payload["message_id"])
+        if reply_markup:
+            await bot.send_message(chat_id=chat_id, business_connection_id=connection_id, text="↗️", reply_markup=reply_markup)
+        return
 
 
     if answer_type == "text":
 
         if not caption:
-
-            return
+            raise ValueError('Empty FAQ answer')
 
 
         await bot.send_message(
@@ -8506,6 +8501,8 @@ async def send_faq_answer(
 
         await bot.send_voice(
             voice=file_id,
+            caption=caption or None,
+            caption_entities=entities,
             **common,
         )
 
@@ -8593,6 +8590,9 @@ async def send_faq_answer(
                     payload.get("question", "")
                 ),
                 options=options,
+                question_entities=_dicts_to_entities(payload.get("question_entities")),
+                explanation=payload.get("explanation"),
+                explanation_entities=_dicts_to_entities(payload.get("explanation_entities")),
                 is_anonymous=(
                     payload.get(
                         "is_anonymous",
@@ -8611,8 +8611,11 @@ async def send_faq_answer(
                         False,
                     )
                 ),
+                correct_option_id=payload.get('correct_option_id') if payload.get('type') == 'quiz' else None,
                 **common,
             )
+        else:
+            raise ValueError('FAQ poll has no options')
 
     elif answer_type == "media_group":
 
@@ -8669,7 +8672,7 @@ async def send_faq_answer(
             elif entry_type == "animation":
 
                 media.append(
-                    InputMediaAnimation(
+                    InputMediaVideo(
                         media=entry_file_id,
                         caption=entry_caption,
                         caption_entities=(
@@ -8703,12 +8706,19 @@ async def send_faq_answer(
                 )
 
 
-        if media:
+        if len(media) == 1:
+            entry = payload['items'][0]
+            await send_faq_answer(bot,chat_id,connection_id,{'answer_type':entry['type'],'answer_file_id':entry['file_id'],'answer':entry.get('text',''),'answer_entities':json.dumps(entry.get('entities') or [])}, reply_markup=reply_markup)
+        elif media:
 
             await bot.send_media_group(
                 media=media,
                 **common,
             )
+            if reply_markup:
+                await bot.send_message(chat_id=chat_id, business_connection_id=connection_id, text="↗️", reply_markup=reply_markup)
+        else:
+            raise ValueError('FAQ album has no supported media')
 
     else:
 
@@ -8746,903 +8756,63 @@ def _is_stop_command(
     )
 
 
-_REASONING_MARKERS = (
-    "user safety:",
-    "user safety :",
-    "the user is asking",
-    "the user is ",
-    "the user asks",
-    "the user wants",
-    "i should respond",
-    "i should reply",
-    "i should not pretend",
-    "i need to respond",
-    "i need to reply",
-    "according to the rules",
-    "according to rule",
-    "rule 7 says",
-    "rule 8 says",
-    "rule 5 says",
-    "rule 7:",
-    "rule 8:",
-    "rule 5:",
-    "<reasoning>",
-    "</reasoning>",
-    "system prompt",
-    "as an ai",
-    "as an assistant",
-)
+def _looks_like_reasoning(text: str):
+    from reply_safety import looks_like_reasoning
+    return looks_like_reasoning(text)
 
 
-def _looks_like_reasoning(
-    text: str,
-):
-
-    if not text:
-
-        return False
+def _strip_reasoning(text: str):
+    from reply_safety import sanitize_reply
+    return sanitize_reply(text)
 
 
-    lowered = text.lower()
-
-
-    return any(
-        marker in lowered
-        for marker in _REASONING_MARKERS
-    )
-
-
-_REASONING_BLOCK_RE = re.compile(
-    r"<\s*/?\s*reasoning\s*>",
-    re.IGNORECASE,
-)
-
-_REASONING_PAIR_RE = re.compile(
-    r"<\s*reasoning\s*>.*?<\s*/\s*reasoning\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
-def _strip_reasoning(
-    text: str,
-):
-
-    if not text:
-
-        return ""
-
-
-    cleaned = (
-        _REASONING_PAIR_RE.sub(
-            "",
-            text,
-        )
-    )
-
-
-    cleaned = (
-        _REASONING_BLOCK_RE.sub(
-            "",
-            cleaned,
-        )
-    )
-
-
-    kept = []
-
-
-    for line in cleaned.splitlines():
-
-        lowered = line.lower()
-
-        if any(
-            marker in lowered
-            for marker in _REASONING_MARKERS
-        ):
-
-            continue
-
-        kept.append(line)
-
-
-    result = "\n".join(
-        kept
-    ).strip()
-
-
-    return result
-
-
-async def _send_business_answer(
-    bot: Bot,
-    chat_id: int,
-    connection_id: str,
-    text: str,
-    is_html: bool = False,
-):
-
-    kwargs = {}
-
-    if is_html:
-
-        kwargs["parse_mode"] = "HTML"
-
-
-    try:
-
-        return await bot.send_message(
-            chat_id=chat_id,
-            business_connection_id=(
-                connection_id
-            ),
-            text=text,
-            **kwargs,
-        )
-
-    except TelegramBadRequest:
-
-        if not is_html:
-
-            raise
-
-
-        return await bot.send_message(
-            chat_id=chat_id,
-            business_connection_id=(
-                connection_id
-            ),
-            text=text,
-        )
+async def _send_business_answer(bot: Bot, chat_id: int, connection_id: str, text: str, is_html: bool = False):
+    # Fallback HTML is generated locally. Strip tags for an oversized message before splitting.
+    if is_html and len(text.encode("utf-16-le")) // 2 > 4000:
+        text = html.unescape(re.sub(r"<[^>]+>", "", text))
+        is_html = False
+    chunks, current, size = [], [], 0
+    for character in text:
+        units = len(character.encode("utf-16-le")) // 2
+        if size + units > 4000:
+            chunks.append("".join(current)); current, size = [], 0
+        current.append(character); size += units
+    if current:
+        chunks.append("".join(current))
+    sent = None
+    for chunk in chunks:
+        kwargs = dict(chat_id=chat_id, business_connection_id=connection_id, text=chunk)
+        if is_html:
+            kwargs["parse_mode"] = "HTML"
+        for attempt in range(2):
+            try:
+                sent = await bot.send_message(**kwargs)
+                break
+            except TelegramRetryAfter as error:
+                if attempt or error.retry_after > 30:
+                    raise
+                await asyncio.sleep(error.retry_after)
+            except TelegramBadRequest:
+                if not is_html:
+                    raise
+                kwargs.pop("parse_mode", None)
+                kwargs["text"] = html.unescape(re.sub(r"<[^>]+>", "", chunk))
+                sent = await bot.send_message(**kwargs)
+                break
+    return sent
 
 
 @router.business_message()
-async def business_message_handler(
-    message: Message,
-    bot: Bot,
-):
-
-    connection_id = (
-        message.business_connection_id
-    )
-
-
-    if not connection_id:
-
-        return
-
-
-    owner_id = (
-        await get_owner_by_connection(
-            connection_id
-        )
-    )
-
-
-    if not owner_id:
-
-        try:
-
-            connection = (
-                await bot.get_business_connection(
-
-                    business_connection_id=(
-                        connection_id
-                    )
-                )
-            )
-
-
-            if not connection.is_enabled:
-
-                return
-
-
-            owner_id = (
-                connection.user.id
-            )
-
-
-            await save_business_connection(
-
-                connection.id,
-
-                owner_id,
-
-                connection.is_enabled,
-            )
-
-
-        except Exception as error:
-
-            logger.exception(
-
-                "Business connection "
-                "error: %s",
-
-                error,
-            )
-
+@router.edited_business_message()
+async def business_message_handler(message: Message, bot: Bot):
+    from business_runtime import enqueue
+    # Edited customer messages must not create a second automatic reply;
+    # owner edits still trigger the same takeover logic as a new message.
+    if message.edit_date:
+        owner_id = await get_owner_by_connection(message.business_connection_id)
+        if not owner_id or not message.from_user or message.from_user.id != owner_id:
             return
-
-
-    # Владелец написал сам
-
-    if (
-        message.from_user
-
-        and
-
-        message.from_user.id
-        == owner_id
-    ):
-
-        return
-
-
-    # Сообщение отправил сам Business Bot
-
-    if message.sender_business_bot:
-
-        return
-
-
-    # =====================================
-    # ЗАПОМИНАЕМ КЛИЕНТА
-    # =====================================
-
-    peer_name = ""
-
-    username = ""
-
-
-    if message.from_user:
-
-        peer_name = " ".join(
-            filter(
-                None,
-                [
-                    message.from_user.first_name,
-                    message.from_user.last_name,
-                ],
-            )
-        )
-
-
-        username = (
-            message.from_user.username
-            or ""
-        )
-
-
-    await remember_chat(
-
-        owner_id=owner_id,
-
-        chat_id=(
-            message.chat.id
-        ),
-
-        peer_name=(
-            peer_name
-        ),
-
-        username=(
-            username
-        ),
-    )
-
-
-    # =====================================
-    # МОЖНО ЛИ ОТВЕЧАТЬ?
-    # =====================================
-
-    allowed, reason, prefs = (
-        await should_autoreply(
-
-            owner_id,
-
-            message.chat.id,
-        )
-    )
-
-
-    if not allowed:
-
-        logger.info(
-
-            "AutoReply skipped | "
-            "owner=%s | chat=%s | reason=%s",
-
-            owner_id,
-
-            message.chat.id,
-
-            reason,
-        )
-
-
-        return
-
-
-    # =====================================
-    # TEXT
-    # =====================================
-
-    user_text = ""
-
-
-    if message.text:
-
-        user_text = (
-            message.text.strip()
-        )
-
-
-    elif message.caption:
-
-        user_text = (
-            message.caption.strip()
-        )
-
-
-    profile = await get_profile(
-        owner_id
-    )
-
-
-    if profile.get("blocked"):
-
-        logger.info(
-            "AutoReply skipped | owner=%s | blocked",
-            owner_id,
-        )
-
-
-        return
-
-
-    # =====================================
-    # СТОП-КОМАНДА: ПАУЗА AI НА ЧАС
-    # =====================================
-
-    if _is_stop_command(
-        user_text
-    ):
-
-        try:
-
-            await set_ai_pause(
-                owner_id,
-                message.chat.id,
-                60,
-            )
-
-
-            await add_chat_message(
-                owner_id,
-                message.chat.id,
-                "user",
-                user_text,
-            )
-
-
-            confirm = (
-                "🤖 Хорошо, помощник не будет "
-                "отвечать в этом чате около часа. "
-                "Если нужно, ответит владелец или "
-                "запасной ответ."
-            )
-
-
-            await bot.send_message(
-
-                chat_id=(
-                    message.chat.id
-                ),
-
-                business_connection_id=(
-                    connection_id
-                ),
-
-                text=confirm,
-            )
-
-
-            await add_chat_message(
-                owner_id,
-                message.chat.id,
-                "assistant",
-                confirm,
-            )
-
-
-            await mark_bot_reply(
-                owner_id,
-                message.chat.id,
-            )
-
-
-        except Exception as error:
-
-            logger.exception(
-                "Stop command error: %s",
-                error,
-            )
-
-
-        return
-
-
-    await add_chat_message(
-        owner_id,
-        message.chat.id,
-        "user",
-        user_text or "[медиа]",
-    )
-
-
-    # =====================================
-    # MEDIA WITHOUT TEXT
-    # =====================================
-
-    if not user_text:
-
-        try:
-
-            fallback_text = (
-                await pick_fallback_text(
-                    owner_id,
-                    message.chat.id,
-                    profile,
-                )
-            )
-
-
-            if not fallback_text:
-
-                return
-
-
-            await _send_business_answer(
-                bot,
-                message.chat.id,
-                connection_id,
-                fallback_text,
-                True,
-            )
-
-
-            await mark_bot_reply(
-                owner_id,
-                message.chat.id,
-            )
-
-
-            await add_chat_message(
-                owner_id,
-                message.chat.id,
-                "assistant",
-                fallback_text,
-            )
-
-
-        except Exception as error:
-
-            logger.exception(
-
-                "Media fallback error: %s",
-
-                error,
-            )
-
-
-        return
-
-
-    if AUTO_REPLY_DELAY > 0:
-
-        await asyncio.sleep(
-            AUTO_REPLY_DELAY
-        )
-
-
-    # =====================================
-    # 1. FAQ
-    # =====================================
-
-    faqs = await get_faqs(
-        owner_id
-    )
-
-
-    faq_item, score = (
-        find_direct_answer(
-
-            user_text,
-
-            faqs,
-
-            FAQ_MATCH_THRESHOLD,
-        )
-    )
-
-
-    answer = None
-
-
-    answer_is_html = False
-
-
-    if faq_item:
-
-        logger.info(
-
-            "FAQ answer | "
-            "owner=%s | score=%.2f",
-
-            owner_id,
-
-            score,
-        )
-
-
-        await set_fallback_stage(
-            owner_id,
-            message.chat.id,
-            0,
-        )
-
-
-        try:
-
-            await send_faq_answer(
-                bot,
-                message.chat.id,
-                connection_id,
-                faq_item,
-            )
-
-
-            await mark_bot_reply(
-                owner_id,
-                message.chat.id,
-            )
-
-
-            await add_chat_message(
-                owner_id,
-                message.chat.id,
-                "assistant",
-                faq_item.get("answer")
-                or "[медиа]",
-            )
-
-
-        except Exception as error:
-
-            logger.exception(
-                "FAQ send error: %s",
-                error,
-            )
-
-
-        return
-
-
-    # =====================================
-    # 2. AI
-    # =====================================
-
-    ai_paused = (
-        await is_ai_paused(
-            owner_id,
-            message.chat.id,
-        )
-    )
-
-
-    if (
-        answer is None
-
-        and USE_AI
-
-        and profile[
-            "ai_enabled"
-        ]
-
-        and not ai_paused
-    ):
-
-        global_settings = (
-            await get_global_settings()
-        )
-
-
-        blocked_topic = (
-            find_blocked_topic(
-
-                user_text,
-
-                global_settings[
-                    "blocked_topics"
-                ],
-            )
-        )
-
-
-        # -----------------------------
-        # ADMIN BLOCK
-        # -----------------------------
-
-        if blocked_topic:
-
-            answer = (
-                global_settings[
-                    "blocked_reply"
-                ]
-            )
-
-
-            logger.info(
-                "Blocked AI topic: %s",
-                blocked_topic,
-            )
-
-
-        # -----------------------------
-        # AI QUOTA
-        # -----------------------------
-
-        else:
-
-            reservation = (
-                await reserve_user_ai_slot(
-                    owner_id
-                )
-            )
-
-
-            if reservation[
-                "allowed"
-            ]:
-
-                languages = (
-                    get_allowed_languages(
-
-                        prefs,
-
-                        profile[
-                            "plan"
-                        ],
-                    )
-                )
-
-
-                context = (
-                    select_ai_context(
-
-                        user_text,
-
-                        faqs,
-                    )
-                )
-
-
-                chat_role = ""
-
-
-                if profile[
-                    "plan"
-                ] == "premium":
-
-                    chat_row = (
-                        await get_chat_settings(
-
-                            owner_id,
-
-                            message.chat.id,
-                        )
-                    )
-
-
-                    if chat_row:
-
-                        chat_role = (
-                            chat_row.get(
-                                "role",
-                                "",
-                            )
-                            or ""
-                        )
-
-
-                result = (
-                    await get_ai_reply(
-
-                        user_text=(
-                            user_text
-                        ),
-
-                        profile=(
-                            profile
-                        ),
-
-                        faq_context=(
-                            context
-                        ),
-
-                        languages=(
-                            languages
-                        ),
-
-                        blocked_topics=(
-                            global_settings[
-                                "blocked_topics"
-                            ]
-                        ),
-
-                        blocked_reply=(
-                            global_settings[
-                                "blocked_reply"
-                            ]
-                        ),
-
-                        chat_role=(
-                            chat_role
-                        ),
-
-                        history=(
-                            await get_chat_history(
-                                owner_id,
-                                message.chat.id,
-                                10,
-                            )
-                        ),
-                    )
-                )
-
-
-                if result.ok:
-
-                    cleaned = (
-                        _strip_reasoning(
-                            result.text
-                        )
-                    )
-
-                else:
-
-                    cleaned = ""
-
-
-                if cleaned:
-
-                    answer = cleaned
-
-
-                    logger.info(
-
-                        "AI answer | "
-                        "owner=%s | provider=%s "
-                        "| model=%s | cleaned=%s",
-
-                        owner_id,
-
-                        result.provider,
-
-                        result.model,
-
-                        _looks_like_reasoning(
-                            result.text
-                        ),
-                    )
-
-
-                else:
-
-                    # Все AI не сработали
-                    # или ответ полностью
-                    # состоял из внутренних
-                    # рассуждений. Возвращаем
-                    # пользователю его AI-слот.
-
-                    await release_user_ai_slot(
-                        owner_id
-                    )
-
-
-                    logger.warning(
-
-                        "AI failed/leaked | "
-                        "owner=%s | error=%s",
-
-                        owner_id,
-
-                        result.error_type,
-                    )
-
-
-            else:
-
-                logger.info(
-
-                    "AI quota denied | "
-                    "owner=%s | reason=%s",
-
-                    owner_id,
-
-                    reservation.get(
-                        "reason"
-                    ),
-                )
-
-
-    # =====================================
-    # 3. FALLBACK
-    # =====================================
-
-    if not answer:
-
-        answer = (
-            await pick_fallback_text(
-                owner_id,
-                message.chat.id,
-                profile,
-            )
-        )
-
-
-        answer_is_html = True
-
-
-        if not answer:
-
-            return
-
-    else:
-
-        await set_fallback_stage(
-            owner_id,
-            message.chat.id,
-            0,
-        )
-
-
-    # =====================================
-    # SEND
-    # =====================================
-
-    try:
-
-        await _send_business_answer(
-            bot,
-            message.chat.id,
-            connection_id,
-            answer,
-            answer_is_html,
-        )
-
-
-        await mark_bot_reply(
-            owner_id,
-            message.chat.id,
-        )
-
-
-        await add_chat_message(
-            owner_id,
-            message.chat.id,
-            "assistant",
-            answer,
-        )
-
-
-    except Exception as error:
-
-        logger.exception(
-            "Business send error: %s",
-            error,
-        )
+    await enqueue(message, bot)
 
 
 # =========================================================
@@ -9671,12 +8841,8 @@ async def build_daily_report_text(
     timezone_name: str,
 ):
 
-    chats = (
-        await get_today_replied_chats(
-            owner_id,
-            timezone_name,
-        )
-    )
+    from extensions import today_contacts
+    chats = await today_contacts(owner_id, timezone_name)
 
 
     if not chats:
@@ -9717,7 +8883,7 @@ async def build_daily_report_text(
 
         "📋 <b>КТО ПИСАЛ СЕГОДНЯ</b>\n\n"
 
-        f"Бот ответил в <b>{len(chats)}</b> "
+        f"Вам написали в <b>{len(chats)}</b> "
         f"чат(ах):\n\n"
 
         + "\n".join(lines)
@@ -9754,14 +8920,13 @@ async def daily_report_loop(
                     date_str = (
                         now.date().isoformat()
                     )
-
-
-                    for slot, hour in (
-                        (0, 12),
-                        (1, 19),
-                    ):
-
-                        if now.hour != hour:
+                    import extensions as ext
+                    if (await ext.options(owner_id))["ui_mode"] != "business":
+                        continue
+                    report_settings = await ext.business_settings(owner_id)
+                    times = [report_settings["report_time"], *report_settings["reminders"]]
+                    for slot, send_time in enumerate(times):
+                        if now.strftime("%H:%M") != send_time:
 
                             continue
 
@@ -9781,6 +8946,9 @@ async def daily_report_loop(
                                 tz_name,
                             )
                         )
+                        if slot == 0:
+                            stats = await ext.statistics(owner_id)
+                            text = "☀️ <b>Утренний отчёт</b>\nСтатистика за 7 дней:\n" + "\n".join(f"{html.escape(source)}: {total}" for source, total, _, _ in stats) + "\n\n" + (text or "Сегодня пока нет ответов.")
 
 
                         if not text:
@@ -9828,7 +8996,11 @@ async def daily_report_loop(
 
 async def main():
 
+    from startup import prepare_database
+    await prepare_database()
     await init_db()
+    from extensions import init_schema
+    await init_schema()
 
 
     await init_providers(
@@ -9841,26 +9013,24 @@ async def main():
     )
 
 
-    dp = Dispatcher(
-        storage=MemoryStorage()
-    )
+    from fsm_storage import SQLiteStorage
+    from aiogram.fsm.storage.memory import SimpleEventIsolation
+    dp = Dispatcher(storage=SQLiteStorage(), events_isolation=SimpleEventIsolation())
 
 
-    dp.include_router(
-        router
-    )
+    from experience import router as experience_router
+    experience_router.message.outer_middleware(block_middleware)
+    experience_router.callback_query.outer_middleware(block_middleware)
+    dp.include_router(experience_router)
+    dp.include_router(router)
 
 
     await bot.delete_webhook(
-        drop_pending_updates=True
+        drop_pending_updates=False
     )
 
 
-    me = await bot.get_me()
-
-
-    global _bot_username
-    _bot_username = me.username
+    me = await bot.me()
 
 
     logger.info(
@@ -9881,9 +9051,9 @@ async def main():
     )
 
 
-    asyncio.create_task(
-        daily_report_loop(bot)
-    )
+    report_task = asyncio.create_task(daily_report_loop(bot))
+    from business_runtime import maintenance_loop
+    maintenance_task = asyncio.create_task(maintenance_loop())
 
 
     try:
@@ -9892,6 +9062,7 @@ async def main():
 
             bot,
 
+            tasks_concurrency_limit=64,
             allowed_updates=(
                 dp.resolve_used_update_types()
             ),
@@ -9900,11 +9071,25 @@ async def main():
 
     finally:
 
+        report_task.cancel()
+        maintenance_task.cancel()
+        from business_runtime import shutdown
+        await shutdown()
+        from experience import shutdown_albums
+        await shutdown_albums()
+        await shutdown_broadcast_albums()
+        album_tasks = [buf['task'] for buf in _pending_albums.values() if buf.get('task')]
+        for task in album_tasks:
+            task.cancel()
+        await asyncio.gather(*album_tasks,return_exceptions=True)
+        await asyncio.gather(report_task, maintenance_task, return_exceptions=True)
         await bot.session.close()
 
 
 if __name__ == "__main__":
 
+    from startup import acquire_instance
+    guard = acquire_instance(BOT_TOKEN)
     try:
 
         asyncio.run(

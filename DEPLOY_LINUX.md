@@ -1,9 +1,14 @@
 # Запуск AutoReplyBot на Linux-сервере
 
+> Для обновления существующего сервера сначала выполните шаги сохранения БД из
+> [IMPLEMENTATION.md](IMPLEMENTATION.md). Не делайте `git pull` поверх единственной копии БД:
+> удаление её из отслеживания может удалить файл из checkout. Укажите внешний `DB_PATH`
+> и `REQUIRE_EXISTING_DB=true`. Используйте `requirements.lock.txt`.
+
 Два варианта: **без root/sudo** (обычный пользователь) и **с root** (systemd).
 Для вашего случая используйте вариант A.
 
-Требуется Python **3.11+** (проверка: `python3 --version`).
+Требуется Python **3.12+** (проверка: `python3 --version`).
 
 ---
 
@@ -25,7 +30,7 @@ cd ~/autoreplybot
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements.lock.txt
 ```
 
 ### A3. Конфигурация
@@ -105,7 +110,7 @@ sudo apt update && sudo apt install -y python3 python3-venv git
 sudo mkdir -p /opt/autoreplybot && sudo cp -r . /opt/autoreplybot
 cd /opt/autoreplybot
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -r requirements.lock.txt
 cp .env.example .env && nano .env
 
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin autoreply
@@ -166,7 +171,7 @@ FAQ/запасной ответ (без AI) или ждут внешний AI а
 ### Затраты
 
 - **Сервер:** дешёвый VPS ≈ **3–5 €/мес** (Hetzner, Contabo и т.п.).
-  Подойдёт любой shared/ VPS с Python 3.11+ и исходящим интернетом.
+  Подойдёт shared/VPS с Python 3.12+ и исходящим интернетом.
 - **AI:** главные расходы. На бесплатных провайдерах
   (openrouter/free, gemini-2.5-flash-lite, groq, deepseek) ≈ **0 $**
   в пределах их суточных квот. Платно только если включите
