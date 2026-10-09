@@ -114,3 +114,8 @@ Bot API не передаёт события открытия чата, чтен
 обрабатывается как обычно. Короткие ответы на уточняющий вопрос бота не подавляются.
 Это правило не снимает ручную паузу владельца.
 
+
+
+## Linked account management (9 October 2026)
+
+Business home → My accounts, or Settings → Account → My accounts. One additional account is allowed for Business, three for Business Premium. The invited registered user must explicitly accept; either side can revoke. Parent notifications open child conversations; manual replies pause child automation, and FAQ additions belong to the child. Personal mode suspends management, while premium expiry suspends extra links without deleting data. See HANDOFF_EN.md section 9 for permissions, storage and staging checks.

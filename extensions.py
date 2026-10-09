@@ -8,7 +8,7 @@ import aiosqlite
 import database as db
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS fsm_state(storage_key TEXT PRIMARY KEY,state TEXT,data TEXT DEFAULT '{}',updated_at TEXT DEFAULT CURRENT_TIMESTAMP);
@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS owner_undo(owner_id INTEGER PRIMARY KEY, snapshot TEX
 CREATE TABLE IF NOT EXISTS fallback_messages(owner_id INTEGER, slot INTEGER, spec TEXT NOT NULL, PRIMARY KEY(owner_id,slot));
 CREATE TABLE IF NOT EXISTS business_settings(owner_id INTEGER PRIMARY KEY, settings TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS assistant_settings(owner_id INTEGER PRIMARY KEY, settings TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS account_links(child_id INTEGER PRIMARY KEY,parent_id INTEGER NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_account_links_parent ON account_links(parent_id);
+CREATE TABLE IF NOT EXISTS account_link_requests(token TEXT PRIMARY KEY,parent_id INTEGER NOT NULL,child_id INTEGER NOT NULL,status TEXT DEFAULT 'pending',created_at TEXT DEFAULT CURRENT_TIMESTAMP,expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS hub_events(id INTEGER PRIMARY KEY,owner_id INTEGER NOT NULL,chat_id INTEGER NOT NULL,connection_id TEXT NOT NULL,direction TEXT NOT NULL,content TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_hub_events_chat ON hub_events(owner_id,chat_id,id);
 """
 
 
@@ -360,7 +365,7 @@ async def complete_request(owner_id, request_id):
 async def maintenance(days=30):
     cutoff = f"-{max(1, days)} days"
     async with db._connect() as conn:
-        for table in ("chat_history", "reply_events", "processed_messages"):
+        for table in ("chat_history", "reply_events", "processed_messages", "hub_events"):
             await conn.execute(
                 f"DELETE FROM {table} WHERE created_at<datetime('now',?)", (cutoff,)
             )
@@ -379,7 +384,7 @@ async def maintenance(days=30):
 
 async def forget_chat(owner_id, chat_id):
     async with db._connect() as conn:
-        for table in ("chat_history", "reply_events", "customer_requests", "handoffs"):
+        for table in ("chat_history", "reply_events", "customer_requests", "handoffs", "hub_events"):
             await conn.execute(
                 f"DELETE FROM {table} WHERE owner_id=? AND chat_id=?",
                 (owner_id, chat_id),

@@ -17,6 +17,7 @@ from config import (
 )
 from matcher import find_direct_answer, select_ai_context
 from policy import find_blocked_topic
+from account_hub import record_activity, describe_spec
 
 logger = logging.getLogger(__name__)
 _workers = {}
@@ -128,6 +129,7 @@ async def enqueue(message, bot):
         await db.add_chat_message(
             owner_id, chat_id, "assistant", message.text or message.caption or "[media]"
         )
+        await record_activity(bot, owner_id, chat_id, connection_id, "owner", message.text or message.caption or "[media]")
         if changed:
             await notify_owner(bot, owner_id, chat_id,
                 "🙋 Вы начали отвечать сами. Бот больше не отправляет AI, FAQ и запасные сообщения в этот чат. Чтобы вернуть его, нажмите кнопку ниже. / Your reply paused the bot in this chat. Tap below to resume.", resume=True)
@@ -152,6 +154,7 @@ async def enqueue(message, bot):
         return
     text = (message.text or message.caption or "").strip()
     await db.add_chat_message(owner_id, chat_id, "user", text or "[media]")
+    await record_activity(bot, owner_id, chat_id, connection_id, "incoming", text or "[" + str(getattr(message, "content_type", "media")) + "]")
     # Silence every automatic path while the owner handles this conversation,
     # including stop acknowledgements and request confirmations.
     if (owner_id, chat_id) in _taking_over or await ext.is_handoff(owner_id, chat_id):
@@ -361,6 +364,7 @@ async def _reply(key, version, message, text, bot):
                     owner_id, chat_id, "assistant", faq.get("answer") or "[media]"
                 )
                 await db.mark_bot_reply(owner_id, chat_id)
+                await record_activity(bot, owner_id, chat_id, connection_id, "outgoing", describe_spec(faq))
                 await ext.record_event(
                     owner_id, chat_id, source, text, True, time.monotonic() - started
                 )
@@ -446,6 +450,7 @@ async def _reply(key, version, message, text, bot):
         delivered = source == "ai"
         await db.mark_bot_reply(owner_id, chat_id)
         await db.add_chat_message(owner_id, chat_id, "assistant", answer)
+        await record_activity(bot, owner_id, chat_id, connection_id, "outgoing", answer)
         if source != "fallback":
             await db.set_fallback_stage(owner_id, chat_id, 0)
         await ext.record_event(

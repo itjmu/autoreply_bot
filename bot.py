@@ -8305,6 +8305,9 @@ async def send_fallback_message(bot, owner_id, chat_id, connection_id, profile):
     item = {"answer_type": spec["type"], "answer": spec.get("text", ""), "answer_file_id": spec.get("file_id", ""), "answer_entities": json.dumps(spec.get("entities", [])), "answer_payload": json.dumps(spec.get("payload", {}))}
     await send_faq_answer(bot, chat_id, connection_id, item, reply_markup=keyboard)
     await set_fallback_stage(owner_id, chat_id, stage + 1)
+    if connection_id:
+        from account_hub import record_activity, describe_spec
+        await record_activity(bot, owner_id, chat_id, connection_id, "outgoing", describe_spec(spec))
     return True
 
 
@@ -9021,6 +9024,10 @@ async def main():
     from experience import router as experience_router
     experience_router.message.outer_middleware(block_middleware)
     experience_router.callback_query.outer_middleware(block_middleware)
+    from account_hub import router as hub_router
+    hub_router.message.outer_middleware(block_middleware)
+    hub_router.callback_query.outer_middleware(block_middleware)
+    dp.include_router(hub_router)
     dp.include_router(experience_router)
     dp.include_router(router)
 
@@ -9077,6 +9084,8 @@ async def main():
         await shutdown()
         from experience import shutdown_albums
         await shutdown_albums()
+        from account_hub import shutdown as shutdown_hub
+        await shutdown_hub()
         await shutdown_broadcast_albums()
         album_tasks = [buf['task'] for buf in _pending_albums.values() if buf.get('task')]
         for task in album_tasks:

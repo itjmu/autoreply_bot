@@ -133,7 +133,7 @@ async def home_markup(owner_id):
         [(choose(lang, "💬 Чаты / Я отвечаю", "💬 Chats / I'll reply"), "ux:inbox:0"), (choose(lang, "Запасные ответы" if business else "Запасной ответ", "Fallback replies" if business else "Fallback reply"), "ux:fallbacks" if business else "ux:edit:fallback_text")],
     ]
     if business:
-        rows.append([(choose(lang, "💼 Бизнес-инструменты", "💼 Business tools"), "ux:business_tools")])
+        rows.append([(choose(lang, "📂 Бизнес", "📂 Business"), "ux:business_tools"), (choose(lang, "👥 Мои аккаунты", "👥 My accounts"), "hub:home")])
     if owner_id in ADMIN_IDS:
         rows.append([(choose(lang, "👑 Админ", "👑 Admin"), "admin")])
     rows.append([(choose(lang, "⚙️ Настройки", "⚙️ Settings"), "ux:settings")])
@@ -156,16 +156,8 @@ async def show_welcome(message):
 
 
 async def panel(callback, text, rows):
-    await callback.answer()
-    try:
-        await callback.message.edit_text(
-            text, reply_markup=markup(rows), parse_mode="HTML"
-        )
-    except Exception:
-        await callback.message.answer(
-            text, reply_markup=markup(rows), parse_mode="HTML"
-        )
-
+    from telegram_ui import update_panel
+    await update_panel(callback, text, markup(rows))
 
 async def prompt(callback, state, target, text, values=None, back_target="ux:home"):
     await state.clear()
@@ -593,37 +585,19 @@ async def navigation(callback: CallbackQuery, state: FSMContext):
         await panel(callback, choose(lang, "Действие сохранено ✅", "Action saved ✅"), [[(choose(lang, "Открыть FAQ", "Open FAQ"), f"ux:faq:{faq_id}")]])
         return
     elif action == "settings":
-        text = choose(lang, "⚙️ <b>Настройки бизнеса</b>" if business else "⚙️ <b>Личные настройки</b>", "⚙️ <b>Business settings</b>" if business else "⚙️ <b>Personal settings</b>")
-        rows = [
-            [(choose(lang, "⏱ Задержки ответов", "⏱ Reply delays"), "ux:delays")],
-            [(choose(lang, "Основной язык ответа", "Primary reply language"), "ux:edit:primary_language")],
-            [(choose(lang, "🧠 Настроить AI", "🧠 Configure AI"), "ux:ai")],
-            [(choose(lang, "Подключить бота", "Connect bot"), "ux:connect"), (choose(lang, "Профиль и ответы", "Profile & replies"), "ux:knowledge")],
-            [(choose(lang, "Бизнес-функции", "Business tools"), "ux:business_tools")],
-            [
-                (
-                    choose(
-                        lang,
-                        "Интерфейс: Личный / Бизнес",
-                        "Interface: Personal / Business",
-                    ),
-                    "ux:interface",
-                )
-            ],
-            [("Русский", "ux:lang:ru"), ("English", "ux:lang:en")],
-            [
-                (choose(lang, "Расписание", "Schedule"), "ux:schedule"),
-                (choose(lang, "Часовой пояс", "Timezone"), "ux:edit:timezone"),
-            ],
-            [
-                (choose(lang, "Дополнительно", "Advanced"), "ux:advanced"),
-                (choose(lang, "Аккаунт", "Account"), "ux:account"),
-            ],
-            back(lang),
-        ]
-        if not business:
-            rows = [[button for button in row if button[1] not in {"ux:business_tools", "ux:schedule", "ux:knowledge"}] for row in rows]
-            rows = [row for row in rows if row]
+        text = choose(lang, "⚙️ Главное → Настройки\nВыберите категорию. Частые переключатели находятся в главном меню.", "⚙️ Home → Settings\nChoose a category. Frequent toggles remain on Home.")
+        rows = [[(choose(lang, "💬 Ответы и AI", "💬 Replies & AI"), "ux:response_settings"), (choose(lang, "🌐 Язык и время", "🌐 Language & time"), "ux:language_settings")], [(choose(lang, "🔌 Подключение", "🔌 Connection"), "ux:connection_settings"), (choose(lang, "📦 Данные", "📦 Data"), "ux:advanced")], [(choose(lang, "👤 Аккаунт", "👤 Account"), "ux:account")], back(lang)]
+    elif action == "response_settings":
+        text = choose(lang, "⚙️ Настройки → Ответы и AI", "⚙️ Settings → Replies & AI")
+        rows = [[(choose(lang, "🧠 Настроить AI", "🧠 Configure AI"), "ux:ai"), (choose(lang, "⏱ Задержки", "⏱ Delays"), "ux:delays")], [(choose(lang, "📚 FAQ", "📚 FAQ"), "ux:faqs"), (choose(lang, "💬 Запасные ответы", "💬 Fallbacks"), "ux:fallbacks" if business else "ux:edit:fallback_text")], back(lang, "ux:settings")]
+    elif action == "language_settings":
+        text = choose(lang, "🌐 Настройки → Язык и время", "🌐 Settings → Language & time")
+        rows = [[(choose(lang, "🗣 Основной язык", "🗣 Primary language"), "ux:edit:primary_language"), (choose(lang, "🕒 Часовой пояс", "🕒 Timezone"), "ux:edit:timezone")], [("🇷🇺 Русский", "ux:lang:ru"), ("🇬🇧 English", "ux:lang:en")], back(lang, "ux:settings")]
+        if business:
+            rows.insert(-1, [(choose(lang, "📅 Расписание", "📅 Schedule"), "ux:schedule")])
+    elif action == "connection_settings":
+        text = choose(lang, "🔌 Настройки → Подключение", "🔌 Settings → Connection")
+        rows = [[(choose(lang, "🔌 Как подключить", "🔌 Connect bot"), "ux:connect"), (choose(lang, "👤 Личный / Бизнес", "👤 Personal / Business"), "ux:interface")], back(lang, "ux:settings")]
     elif action == "advanced":
         text = choose(lang, "Дополнительные настройки", "Advanced settings")
         rows = [
@@ -635,10 +609,15 @@ async def navigation(callback: CallbackQuery, state: FSMContext):
             back(lang, "ux:settings"),
         ]
     elif action == "business_tools":
-        text = choose(lang, "Бизнес-инструменты. Повышенные лимиты FAQ и AI доступны с Premium.", "Business tools. Higher FAQ and AI quotas are available with Premium.")
-        rows = [[(choose(lang, "История и память AI", "History & AI memory"), "ux:inbox:0"), (choose(lang, "Статистика", "Statistics"), "ux:stats")], [(choose(lang, "Заявки", "Requests"), "ux:requests"), (choose(lang, "Сбор заявок", "Collect requests"), "ux:collect")], [(choose(lang, "Тест ответов", "Test replies"), "ux:test"), (choose(lang, "График", "Schedule"), "ux:schedule")], back(lang)]
-        rows.insert(-1, [(choose(lang, "Отчёты и напоминания", "Reports & reminders"), "ux:reports")])
-        rows.insert(0, [(choose(lang, "Профиль и ответы", "Profile & replies"), "ux:knowledge"), (choose(lang, "Заявки", "Requests"), "ux:requests")])
+        text = choose(lang, "💼 Бизнес\nВыберите задачу. Частые переключатели находятся в главном меню.", "💼 Business\nChoose a task. Frequent controls are on the home screen.")
+        rows = [
+            [(choose(lang, "💬 Диалоги", "💬 Conversations"), "ux:inbox:0"), (choose(lang, "📊 Статистика", "📊 Statistics"), "ux:stats")],
+            [(choose(lang, "📋 Заявки", "📋 Requests"), "ux:requests"), (choose(lang, "📝 Сбор заявок", "📝 Collect requests"), "ux:collect")],
+            [(choose(lang, "🧠 Профиль AI", "🧠 AI profile"), "ux:knowledge"), (choose(lang, "🧪 Тест ответов", "🧪 Test replies"), "ux:test")],
+            [(choose(lang, "🕒 График", "🕒 Schedule"), "ux:schedule"), (choose(lang, "🔔 Отчёты", "🔔 Reports"), "ux:reports")],
+            [(choose(lang, "👥 Мои аккаунты", "👥 My accounts"), "hub:home")],
+            back(lang),
+        ]
     elif action == "reports":
         settings = await ext.business_settings(owner)
         text = choose(lang, "Утренний отчёт: ", "Morning report: ") + settings["report_time"] + "\n" + choose(lang, "Три напоминания: ", "Three reminders: ") + ", ".join(settings["reminders"]) + "\n" + prefs["timezone"]
@@ -653,6 +632,7 @@ async def navigation(callback: CallbackQuery, state: FSMContext):
                 ("Premium", "ux:premium"),
                 (choose(lang, "Рефералы", "Referrals"), "ux:referrals"),
             ],
+            [(choose(lang, "👥 Мои аккаунты", "👥 My accounts"), "hub:home")],
             back(lang, "ux:settings"),
         ]
     elif action == "fallbacks":
@@ -804,7 +784,8 @@ async def navigation(callback: CallbackQuery, state: FSMContext):
             "<b>FAQ</b>\nНажмите вопрос для просмотра или удаления.",
             "<b>FAQ</b>\nSelect a question to view or delete it.",
         )
-        rows = [[(f["question"][:50], f"ux:faq:{f['id']}")] for f in faqs[:50]] + [
+        from button_layout import faq_rows
+        rows = faq_rows(faqs[:50]) + [
             back(lang)
         ]
     elif action.startswith("faq:"):

@@ -1,6 +1,6 @@
 # AutoReplyBot — Release Handoff
 
-**Prepared:** 7 October 2026 · Asia/Karachi  
+**Prepared:** 9 October 2026 · Asia/Karachi  
 **Purpose:** Replace the previous server version while preserving production data.  
 **Deployment status:** Updated and verified locally. No server update or production polling was performed.
 
@@ -242,3 +242,27 @@ Older code may not understand newer payload fields or command buttons. Keeping t
 - Customer-facing previews, layout and Linux service startup require the staging acceptance above. No claim of a production deployment is made by this document.
 
 Related documents: `MODE_WORKFLOW.md`, `AI_CONFIGURATION.md`, `IMPLEMENTATION.md`, `DEPLOY_LINUX.md`, and the historical `AUDIT.md`.
+
+## 9. Update — 9 October 2026: menus and linked accounts
+
+Saved FAQ buttons preserve their order and use three columns for questions shorter than 10 characters, two columns for 10–15 characters, and one column for longer questions. Rows are closed when the width changes. Settings are grouped into Replies & AI, Language & time, Connection, Data, and Account. The Business page groups conversations/statistics, requests, AI tools, schedule/reports, and linked accounts without duplicate request entries.
+
+### Linked accounts: “My accounts”
+
+A Business manager can link one additional registered account; Business Premium allows three. The manager opens Account → My accounts → Add account and enters the child's numeric Telegram user ID. The child receives the requesting manager's name, username and ID, an explanation of permissions, and Yes / No / Report buttons. Invitations expire after 24 hours. No access is granted until the child accepts. Repeated requests to the same pair are restricted; reporting blocks that pair and sends a best-effort notice to configured administrators.
+
+Approved managers receive text/caption/type summaries of incoming messages, automated replies and owner replies, with account and chat IDs and a button to open the conversation. Media is summarized in notifications rather than copied in full. The conversation page exposes stored history, manual reply, resume automation, and add FAQ. Manual replies and new FAQ answers support the existing serialization pipeline, including formatting, media and automatically collected albums. FAQ entries are saved in the child's database and count against the child's own limits.
+
+Manual replying pauses automation in the child's selected chat; it stays paused until explicitly resumed. Replies use the child's verified, enabled Telegram business connection and require reply permissions. Telegram delivery restrictions still apply. Both parties can revoke the link. Revocation immediately denies subsequent manager actions; already delivered notifications cannot be recalled. Pending notification delivery rechecks access.
+
+An account cannot be managed by multiple parents or form nested management chains. Switching the parent to Personal suspends management. Premium expiry suspends additional links above the Business limit without deleting them. Switching back or renewing restores eligible links. Shared FAQ/language/timezone behavior within each account is unchanged; different accounts retain separate data.
+
+### Storage, shutdown and acceptance
+
+Schema version **5** adds account_links, account_link_requests, and hub_events through an additive migration. The existing migration backup policy applies. Activity summaries participate in retention and per-chat deletion. Invitation and link records remain separate from FAQ data. Background album and notification tasks are cancelled on shutdown; notification delivery is best effort and is not a durable outbox.
+
+Before production rollout, use two staging accounts to verify invitation delivery, wrong-user rejection, accept/decline/report, both-party revocation, child connection permissions, incoming/outgoing notification routing, formatted/media replies, FAQ ownership, and suspension after changing the parent's mode or plan. Confirm automatic replies remain paused after a manager reply and only resume on explicit action. Local tests cover authorization, request expiry, quotas, concurrent acceptance, revocation, notification routing, reply ownership, menu grouping and FAQ row boundaries.
+
+### Final local verification (9 October 2026)
+
+All 130 unittest tests passed. Selected Ruff correctness checks, Python compilation and pip dependency checks passed. The schema-5 migration on a temporary copy preserved user/FAQ counts and SQLite integrity; the source database remained unchanged. The concurrent local 1,000-FAQ CPU microbenchmark measured a median of 523 ms and maximum of 875 ms; this is not a Telegram/network or production load benchmark. Live two-account staging acceptance and server deployment remain pending.

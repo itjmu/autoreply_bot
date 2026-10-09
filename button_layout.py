@@ -27,6 +27,22 @@ def button_rows(payload):
 _ICONS = {"faqs": "📚", "faq_add": "➕", "faq_extra": "➕", "faq_button_types": "🔘", "faq_buttons": "🔗", "faq_command": "⌨️", "faq_command_button": "⌨️", "faq_layout": "▦", "faq_preview": "👁", "settings": "⚙️", "advanced": "🛠", "export": "📤", "import": "📥", "setup": "🧭", "interface": "👤", "account": "👤", "premium": "⭐", "referrals": "🎁", "connect": "🔌", "knowledge": "📚", "details": "📝", "fallbacks": "💬", "reports": "📅", "report_edit": "🕒", "requests": "📋", "collect": "📥", "stats": "📊", "schedule": "🕒", "schedule_toggle": "🕒", "test": "🧪", "templates": "🧩", "suggestions": "💡", "undo": "↩️"}
 
 
+def faq_rows(faqs, prefix="ux:faq:"):
+    """Keep the original order; pack short labels without mixing widths."""
+    rows, current, width = [], [], None
+    for faq in faqs:
+        label = faq["question"][:50]
+        columns = 3 if len(faq["question"]) < 10 else 2 if len(faq["question"]) < 16 else 1
+        if current and (width != columns or len(current) == width):
+            rows.append(current)
+            current = []
+        width = columns
+        current.append((label, f"{prefix}{faq['id']}"))
+    if current:
+        rows.append(current)
+    return rows
+
+
 def menu_rows(rows):
     result, pending = [], []
     def flush():
